@@ -208,22 +208,17 @@ npm run preview
 - o parser de Markdown ainda é simples
 - alguns cálculos de layout ainda usam estimativas
 - imagens e links ainda não têm edição avançada
-- o bundle de exportação está pesado
 - o renderer manual de exportação ainda pode divergir sutilmente do canvas em casos mais ricos
 
 ## Troubleshooting
 
-### `npm install` mostra vulnerabilidade
-
-Atualmente existe pelo menos `1 critical severity vulnerability` reportada por dependências. O projeto segue funcional, mas isso deve ser revisado antes de uso em produção.
-
 ### O build mostra aviso de chunk grande
 
-As dependências de exportação visual aumentam bastante o bundle. O build passa normalmente, mas há espaço para otimização com lazy loading.
+O fluxo de exportação foi movido para carregamento sob demanda, então o editor principal não precisa mais baixar a parte de PDF na carga inicial. Se ainda houver aviso em builds futuros, o próximo passo natural é segmentar mais chunks do renderer.
 
 ### A exportação visual sai com muito espaço em branco
 
-O recorte automático já existe, mas casos extremos com conteúdo muito fora do fluxo principal ainda podem exigir refinamento.
+O sistema já faz recorte automático por área útil e ainda aplica um corte final por leitura de pixels, o que reduz bastante margens sobrando. Se um nó estiver extremamente distante dos demais, o espaço entre eles ainda pode aparecer por representar a geometria real do mapa.
 
 ## Roadmap
 
@@ -256,6 +251,4 @@ O recorte automático já existe, mas casos extremos com conteúdo muito fora do
 - permitir trocar imagem existente sem reabrir o fluxo completo
 - adicionar opção de ocultar minimapa
 - melhorar a experiência mobile
-- otimizar bundle com lazy loading nas dependências de exportação
-- revisar vulnerabilidades das dependências
 - refinar microinterações e estados visuais

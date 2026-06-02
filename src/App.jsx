@@ -1,6 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { toPng } from "html-to-image";
-import { jsPDF } from "jspdf";
 import {
   Focus,
   Palette,
@@ -178,33 +176,6 @@ function parseMarkdownToMap(markdown) {
   return map;
 }
 
-function waitForNextPaint() {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(resolve);
-    });
-  });
-}
-
-function waitForImages(root) {
-  const images = Array.from(root.querySelectorAll("img"));
-  if (images.length === 0) return Promise.resolve();
-
-  return Promise.all(
-    images.map(
-      (image) =>
-        new Promise((resolve) => {
-          if (image.complete) {
-            resolve();
-            return;
-          }
-          image.onload = () => resolve();
-          image.onerror = () => resolve();
-        })
-    )
-  );
-}
-
 function loadImageElement(src) {
   return new Promise((resolve) => {
     const image = new Image();
@@ -314,6 +285,69 @@ function getVisibleMapBounds(nodes, rootId) {
       maxY: -Infinity,
     }
   );
+}
+
+function trimCanvasWhitespace(sourceCanvas, padding = 24) {
+  const sourceContext = sourceCanvas.getContext("2d");
+  if (!sourceContext) return sourceCanvas;
+
+  const { width, height } = sourceCanvas;
+  const imageData = sourceContext.getImageData(0, 0, width, height).data;
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4;
+      const alpha = imageData[index + 3];
+      const red = imageData[index];
+      const green = imageData[index + 1];
+      const blue = imageData[index + 2];
+      const isWhitePixel = red > 248 && green > 248 && blue > 248;
+
+      if (alpha > 0 && !isWhitePixel) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  if (maxX === -1 || maxY === -1) return sourceCanvas;
+
+  const cropMinX = Math.max(0, minX - padding);
+  const cropMinY = Math.max(0, minY - padding);
+  const cropMaxX = Math.min(width, maxX + padding + 1);
+  const cropMaxY = Math.min(height, maxY + padding + 1);
+  const cropWidth = Math.max(1, cropMaxX - cropMinX);
+  const cropHeight = Math.max(1, cropMaxY - cropMinY);
+
+  const trimmedCanvas = document.createElement("canvas");
+  trimmedCanvas.width = cropWidth;
+  trimmedCanvas.height = cropHeight;
+
+  const trimmedContext = trimmedCanvas.getContext("2d");
+  if (!trimmedContext) return sourceCanvas;
+
+  trimmedContext.fillStyle = "#ffffff";
+  trimmedContext.fillRect(0, 0, cropWidth, cropHeight);
+  trimmedContext.drawImage(
+    sourceCanvas,
+    cropMinX,
+    cropMinY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    cropWidth,
+    cropHeight
+  );
+
+  return trimmedCanvas;
 }
 
 function App() {
@@ -784,6 +818,7 @@ function App() {
         image.onerror = reject;
       });
 
+      const { jsPDF } = await import("jspdf");
       const pdf = new jsPDF({
         orientation: image.width > image.height ? "landscape" : "portrait",
         unit: "px",
@@ -1049,131 +1084,6 @@ function App() {
 
   const miniScale = Math.min(148 / (bounds.maxX - bounds.minX || 1), 88 / (bounds.maxY - bounds.minY || 1));
 
-  function createExportStage() {
-    if (visibleNodes.length === 0) return null;
-
-    const padding = 48;
-    const exportBounds = getVisibleMapBounds(visibleNodes, map.rootId);
-    const width = Math.max(320, Math.ceil(exportBounds.maxX - exportBounds.minX + padding * 2));
-    const height = Math.max(240, Math.ceil(exportBounds.maxY - exportBounds.minY + padding * 2));
-
-    const stage = document.createElement("div");
-    stage.style.position = "fixed";
-    stage.style.left = "-9999px";
-    stage.style.top = "-9999px";
-    stage.style.width = `${width}px`;
-    stage.style.height = `${height}px`;
-    stage.style.background = "#ffffff";
-    stage.style.overflow = "hidden";
-    stage.style.fontFamily = "Manrope, sans-serif";
-    stage.style.color = "#0f172a";
-    stage.style.pointerEvents = "none";
-    stage.style.zIndex = "9999";
-
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("width", String(width));
-    svg.setAttribute("height", String(height));
-    svg.style.position = "absolute";
-    svg.style.inset = "0";
-
-    visibleNodes.forEach((node) => {
-      if (!node.parentId) return;
-      const parent = map.nodes[node.parentId];
-      if (!parent) return;
-      const { startX, startY, endX, endY } = getEdgeAnchors(parent, node, map.rootId);
-      const curve = Math.max(Math.abs(endX - startX) * 0.36, 52);
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute(
-        "d",
-        `M ${startX - exportBounds.minX + padding} ${startY - exportBounds.minY + padding} C ${
-          startX + curve - exportBounds.minX + padding
-        } ${startY - exportBounds.minY + padding}, ${
-          endX - curve - exportBounds.minX + padding
-        } ${endY - exportBounds.minY + padding}, ${endX - exportBounds.minX + padding} ${
-          endY - exportBounds.minY + padding
-        }`
-      );
-      path.setAttribute("fill", "none");
-      path.setAttribute("stroke", node.color || "#4d7cff");
-      path.setAttribute("stroke-opacity", "0.82");
-      path.setAttribute("stroke-width", "3");
-      path.setAttribute("stroke-linecap", "round");
-      svg.appendChild(path);
-    });
-
-    stage.appendChild(svg);
-
-    visibleNodes.forEach((node) => {
-      const isRoot = node.id === map.rootId;
-      const width = getNodeWidth(node, map.rootId);
-      const height = getNodeHeight(node, map.rootId);
-      const card = document.createElement("div");
-      card.style.position = "absolute";
-      card.style.left = `${node.x - exportBounds.minX + padding}px`;
-      card.style.top = `${node.y - exportBounds.minY + padding}px`;
-      card.style.width = `${width}px`;
-      card.style.minHeight = `${height}px`;
-      card.style.padding = isRoot ? "14px 16px" : "12px 14px";
-      card.style.borderRadius = isRoot ? "20px" : "18px";
-      card.style.boxSizing = "border-box";
-      card.style.background = isRoot ? node.color || "#111827" : "#ffffff";
-      card.style.color = isRoot ? "#ffffff" : "#0f172a";
-      card.style.border = isRoot
-        ? "1px solid rgba(17, 24, 39, 0.24)"
-        : "1px solid rgba(15, 23, 42, 0.08)";
-      card.style.boxShadow = isRoot
-        ? "0 16px 30px rgba(17, 24, 39, 0.16)"
-        : "0 12px 24px rgba(15, 23, 42, 0.06)";
-
-      const title = document.createElement("div");
-      title.textContent = node.title || "Novo tópico";
-      title.style.fontSize = "16px";
-      title.style.fontWeight = "700";
-      title.style.lineHeight = "1.2";
-      title.style.overflowWrap = "anywhere";
-      card.appendChild(title);
-
-      if (node.note) {
-        const note = document.createElement("div");
-        note.textContent = node.note;
-        note.style.marginTop = "6px";
-        note.style.fontSize = "13px";
-        note.style.lineHeight = "1.35";
-        note.style.opacity = isRoot ? "0.78" : "0.72";
-        note.style.whiteSpace = "pre-wrap";
-        note.style.overflowWrap = "anywhere";
-        card.appendChild(note);
-      }
-
-      if (node.imageUrl) {
-        const image = document.createElement("img");
-        image.src = node.imageUrl;
-        image.style.marginTop = "10px";
-        image.style.width = "100%";
-        image.style.maxHeight = "140px";
-        image.style.objectFit = "cover";
-        image.style.borderRadius = "12px";
-        image.style.border = "1px solid rgba(15, 23, 42, 0.08)";
-        card.appendChild(image);
-      }
-
-      if (node.linkUrl) {
-        const link = document.createElement("div");
-        link.textContent = node.linkUrl;
-        link.style.marginTop = "10px";
-        link.style.fontSize = "12px";
-        link.style.color = isRoot ? "#dbeafe" : "#4d7cff";
-        link.style.overflowWrap = "anywhere";
-        card.appendChild(link);
-      }
-
-      stage.appendChild(card);
-    });
-
-    document.body.appendChild(stage);
-    return { stage };
-  }
-
   async function createExportCanvas() {
     if (visibleNodes.length === 0) return null;
 
@@ -1297,7 +1207,7 @@ function App() {
       }
     });
 
-    return canvas;
+    return trimCanvasWhitespace(canvas, 36);
   }
 
   return (
