@@ -8,6 +8,8 @@ import {
   Unlink,
   Copy,
   Trash2,
+  Undo2,
+  Redo2,
   Workflow,
   X,
 } from "lucide-react";
@@ -32,6 +34,22 @@ const EMPTY_ASSET_MODAL = {
   url: "",
 };
 const DEFAULT_FREE_EDGE_COLOR = "#475569";
+const DEFAULT_FREE_EDGE_STYLE = "dashed";
+const DEFAULT_FREE_EDGE_THICKNESS = 2.5;
+const FREE_EDGE_STYLE_OPTIONS = [
+  { id: "dashed", label: "Tracejada" },
+  { id: "dotted", label: "Pontilhada" },
+  { id: "solid", label: "Continua" },
+];
+const FREE_EDGE_ANCHOR_OPTIONS = [
+  { id: "auto", label: "Auto" },
+  { id: "top", label: "Topo" },
+  { id: "bottom", label: "Baixo" },
+  { id: "left", label: "Esquerda" },
+  { id: "right", label: "Direita" },
+];
+const FREE_EDGE_THICKNESS_OPTIONS = [2, 3, 4, 5];
+const HISTORY_LIMIT = 100;
 
 function normalizeFreeEdges(freeEdges) {
   if (!Array.isArray(freeEdges)) return [];
@@ -43,6 +61,13 @@ function normalizeFreeEdges(freeEdges) {
       toId: edge.toId,
       color: edge.color || DEFAULT_FREE_EDGE_COLOR,
       label: edge.label || "",
+      style: edge.style || DEFAULT_FREE_EDGE_STYLE,
+      thickness: edge.thickness || DEFAULT_FREE_EDGE_THICKNESS,
+      arrow: Boolean(edge.arrow),
+      fromAnchor: edge.fromAnchor || "auto",
+      toAnchor: edge.toAnchor || "auto",
+      bendX: Number.isFinite(edge.bendX) ? edge.bendX : null,
+      bendY: Number.isFinite(edge.bendY) ? edge.bendY : null,
     }));
 }
 
@@ -315,6 +340,119 @@ function makeFreeEdge(fromId, toId) {
     toId: b,
     color: DEFAULT_FREE_EDGE_COLOR,
     label: "",
+    style: DEFAULT_FREE_EDGE_STYLE,
+    thickness: DEFAULT_FREE_EDGE_THICKNESS,
+    arrow: false,
+    fromAnchor: "auto",
+    toAnchor: "auto",
+    bendX: null,
+    bendY: null,
+  };
+}
+
+function getFreeEdgeDasharray(style) {
+  if (style === "dotted") return "2 8";
+  if (style === "solid") return "";
+  return "10 8";
+}
+
+function getConnectionCurve(startX, startY, endX, endY, type = "tree") {
+  const curve =
+    type === "free"
+      ? Math.max(Math.abs(endX - startX) * 0.28 + Math.abs(endY - startY) * 0.12, 44)
+      : Math.max(Math.abs(endX - startX) * 0.36, 52);
+
+  return {
+    curve,
+    c1x: startX + curve,
+    c1y: startY,
+    c2x: endX - curve,
+    c2y: endY,
+  };
+}
+
+function getArrowHeadPoints(x, y, angle, size) {
+  const wing = size * 0.66;
+  const backX = x - Math.cos(angle) * size;
+  const backY = y - Math.sin(angle) * size;
+  const leftX = backX + Math.cos(angle + Math.PI / 2) * wing;
+  const leftY = backY + Math.sin(angle + Math.PI / 2) * wing;
+  const rightX = backX + Math.cos(angle - Math.PI / 2) * wing;
+  const rightY = backY + Math.sin(angle - Math.PI / 2) * wing;
+
+  return `${x},${y} ${leftX},${leftY} ${rightX},${rightY}`;
+}
+
+function drawArrowHead(ctx, x, y, angle, size, color) {
+  const wing = size * 0.66;
+  const backX = x - Math.cos(angle) * size;
+  const backY = y - Math.sin(angle) * size;
+  const leftX = backX + Math.cos(angle + Math.PI / 2) * wing;
+  const leftY = backY + Math.sin(angle + Math.PI / 2) * wing;
+  const rightX = backX + Math.cos(angle - Math.PI / 2) * wing;
+  const rightY = backY + Math.sin(angle - Math.PI / 2) * wing;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(leftX, leftY);
+  ctx.lineTo(rightX, rightY);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+function getBezierEndAngle(c2x, c2y, endX, endY) {
+  return Math.atan2(endY - c2y, endX - c2x);
+}
+
+function getOrthogonalRoutePoints(startX, startY, endX, endY, bendX, bendY) {
+  return [
+    { x: startX, y: startY },
+    { x: bendX, y: startY },
+    { x: bendX, y: bendY },
+    { x: endX, y: bendY },
+    { x: endX, y: endY },
+  ].filter((point, index, points) => {
+    if (index === 0) return true;
+    const previous = points[index - 1];
+    return previous.x !== point.x || previous.y !== point.y;
+  });
+}
+
+function getPolylineAngle(points) {
+  if (points.length < 2) return 0;
+  const end = points[points.length - 1];
+  for (let index = points.length - 2; index >= 0; index -= 1) {
+    const point = points[index];
+    if (point.x !== end.x || point.y !== end.y) {
+      return Math.atan2(end.y - point.y, end.x - point.x);
+    }
+  }
+  return 0;
+}
+
+function getFreeEdgeGeometry(edge, fromNode, toNode, rootId) {
+  const { startX, startY, endX, endY } = getFreeEdgeAnchors(fromNode, toNode, rootId, edge);
+  const bendX = Number.isFinite(edge?.bendX) ? edge.bendX : (startX + endX) / 2;
+  const bendY = Number.isFinite(edge?.bendY) ? edge.bendY : (startY + endY) / 2;
+  const points = getOrthogonalRoutePoints(startX, startY, endX, endY, bendX, bendY);
+  const pathD = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  const labelPoint = points[Math.max(1, Math.floor((points.length - 1) / 2))] || { x: bendX, y: bendY };
+
+  return {
+    startX,
+    startY,
+    endX,
+    endY,
+    bendX,
+    bendY,
+    points,
+    pathD,
+    arrowAngle: getPolylineAngle(points),
+    labelX: labelPoint.x,
+    labelY: labelPoint.y - 14,
+    handleX: bendX,
+    handleY: bendY,
   };
 }
 
@@ -325,13 +463,56 @@ function getNodeCenter(node, rootId) {
   };
 }
 
-function getFreeEdgeAnchors(fromNode, toNode, rootId) {
+function getAnchoredPoint(node, rootId, anchor, fallbackTarget) {
+  const width = getNodeWidth(node, rootId);
+  const height = getNodeHeight(node, rootId);
+  const center = getNodeCenter(node, rootId);
+
+  if (anchor === "top") return { x: center.x, y: node.y };
+  if (anchor === "bottom") return { x: center.x, y: node.y + height };
+  if (anchor === "left") return { x: node.x, y: center.y };
+  if (anchor === "right") return { x: node.x + width, y: center.y };
+
+  if (fallbackTarget) {
+    const deltaX = fallbackTarget.x - center.x;
+    const deltaY = fallbackTarget.y - center.y;
+    if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+      return {
+        x: deltaX >= 0 ? node.x + width : node.x,
+        y: center.y,
+      };
+    }
+    return {
+      x: center.x,
+      y: deltaY >= 0 ? node.y + height : node.y,
+    };
+  }
+
+  return center;
+}
+
+function getFreeEdgeAnchors(fromNode, toNode, rootId, edge = null) {
   const fromWidth = getNodeWidth(fromNode, rootId);
   const fromHeight = getNodeHeight(fromNode, rootId);
   const toWidth = getNodeWidth(toNode, rootId);
   const toHeight = getNodeHeight(toNode, rootId);
   const fromCenter = getNodeCenter(fromNode, rootId);
   const toCenter = getNodeCenter(toNode, rootId);
+
+  const fromAnchor = edge?.fromAnchor || "auto";
+  const toAnchor = edge?.toAnchor || "auto";
+
+  if (fromAnchor !== "auto" || toAnchor !== "auto") {
+    const fromPoint = getAnchoredPoint(fromNode, rootId, fromAnchor, toCenter);
+    const toPoint = getAnchoredPoint(toNode, rootId, toAnchor, fromCenter);
+    return {
+      startX: fromPoint.x,
+      startY: fromPoint.y,
+      endX: toPoint.x,
+      endY: toPoint.y,
+    };
+  }
+
   const deltaX = toCenter.x - fromCenter.x;
   const deltaY = toCenter.y - fromCenter.y;
 
@@ -416,7 +597,16 @@ function trimCanvasWhitespace(sourceCanvas, padding = 24) {
 }
 
 function App() {
-  const [map, setMap] = useState(() => loadMap());
+  const [history, setHistory] = useState(() => {
+    const initialMap = loadMap();
+    return {
+      past: [],
+      present: initialMap,
+      future: [],
+      group: null,
+    };
+  });
+  const map = history.present;
   const [selectedId, setSelectedId] = useState(() => loadMap().rootId);
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 });
   const [status, setStatus] = useState("Pronto");
@@ -434,6 +624,7 @@ function App() {
   const frameRef = useRef(null);
   const dragRef = useRef(null);
   const panRef = useRef(null);
+  const freeEdgeDragRef = useRef(null);
   const fileInputRef = useRef(null);
   const markdownInputRef = useRef(null);
   const assetFileInputRef = useRef(null);
@@ -449,6 +640,12 @@ function App() {
   }, [map, selectedId]);
 
   useEffect(() => {
+    if (selectedFreeEdgeId && !(map.freeEdges || []).some((edge) => edge.id === selectedFreeEdgeId)) {
+      setSelectedFreeEdgeId(null);
+    }
+  }, [map, selectedFreeEdgeId]);
+
+  useEffect(() => {
     centerOnNode(map.rootId);
   }, []);
 
@@ -460,6 +657,22 @@ function App() {
       if (event.code === "Space" && !isEditing) {
         event.preventDefault();
         setIsSpacePressed(true);
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redoMap();
+        } else {
+          undoMap();
+        }
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redoMap();
+        return;
       }
 
       if (isEditing) return;
@@ -538,13 +751,12 @@ function App() {
     const fromNode = map.nodes[selectedFreeEdge.fromId];
     const toNode = map.nodes[selectedFreeEdge.toId];
     if (!fromNode || !toNode) return null;
-    const fromCenter = getNodeCenter(fromNode, map.rootId);
-    const toCenter = getNodeCenter(toNode, map.rootId);
-    const midX = (fromCenter.x + toCenter.x) / 2;
-    const midY = (fromCenter.y + toCenter.y) / 2;
+    const geometry = getFreeEdgeGeometry(selectedFreeEdge, fromNode, toNode, map.rootId);
     return {
-      left: midX * viewport.scale + viewport.x,
-      top: midY * viewport.scale + viewport.y,
+      left: geometry.labelX * viewport.scale + viewport.x,
+      top: geometry.labelY * viewport.scale + viewport.y,
+      handleLeft: geometry.handleX * viewport.scale + viewport.x,
+      handleTop: geometry.handleY * viewport.scale + viewport.y,
     };
   }, [selectedFreeEdge, map.nodes, map.rootId, viewport]);
   const selectedNodeMetrics = selectedNode
@@ -566,15 +778,79 @@ function App() {
     transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
   };
 
-  function updateMap(updater, nextStatus) {
-    setMap((current) => {
-      const next = updater(current);
-      return next;
+  const canUndo = history.past.length > 0;
+  const canRedo = history.future.length > 0;
+
+  function clearHistoryGroup() {
+    setHistory((current) => (current.group ? { ...current, group: null } : current));
+  }
+
+  function updateMap(updater, nextStatus, options = {}) {
+    const { group = null, skipHistory = false } = options;
+
+    setHistory((current) => {
+      const next = updater(current.present);
+      if (next === current.present) return current;
+
+      if (skipHistory) {
+        return {
+          ...current,
+          present: next,
+          group: null,
+        };
+      }
+
+      if (group && current.group === group) {
+        return {
+          ...current,
+          present: next,
+          future: [],
+        };
+      }
+
+      return {
+        past: [...current.past, current.present].slice(-HISTORY_LIMIT),
+        present: next,
+        future: [],
+        group: group ?? null,
+      };
     });
     if (nextStatus) setStatus(nextStatus);
   }
 
-  function setNodeField(id, field, value) {
+  function undoMap() {
+    setHistory((current) => {
+      if (current.past.length === 0) return current;
+      const previous = current.past[current.past.length - 1];
+      return {
+        past: current.past.slice(0, -1),
+        present: previous,
+        future: [current.present, ...current.future].slice(0, HISTORY_LIMIT),
+        group: null,
+      };
+    });
+    setStatus("Desfeito");
+    setPendingConnectionFromId(null);
+    setActiveContextPanel(null);
+  }
+
+  function redoMap() {
+    setHistory((current) => {
+      if (current.future.length === 0) return current;
+      const next = current.future[0];
+      return {
+        past: [...current.past, current.present].slice(-HISTORY_LIMIT),
+        present: next,
+        future: current.future.slice(1),
+        group: null,
+      };
+    });
+    setStatus("Refeito");
+    setPendingConnectionFromId(null);
+    setActiveContextPanel(null);
+  }
+
+  function setNodeField(id, field, value, options) {
     updateMap((current) => {
       const node = current.nodes[id];
       if (!node) return current;
@@ -592,10 +868,10 @@ function App() {
       };
 
       return next;
-    }, "Mapa atualizado");
+    }, "Mapa atualizado", options);
   }
 
-  function setNodeFields(id, patch) {
+  function setNodeFields(id, patch, options) {
     updateMap((current) => {
       const node = current.nodes[id];
       if (!node) return current;
@@ -610,7 +886,7 @@ function App() {
           },
         },
       };
-    }, "Mapa atualizado");
+    }, "Mapa atualizado", options);
   }
 
   function startFreeConnection(nodeId) {
@@ -631,7 +907,7 @@ function App() {
     setPendingConnectionFromId(null);
   }
 
-  function setFreeEdgeFields(edgeId, patch) {
+  function setFreeEdgeFields(edgeId, patch, options) {
     updateMap((current) => ({
       ...current,
       freeEdges: (current.freeEdges || []).map((edge) =>
@@ -642,7 +918,7 @@ function App() {
             }
           : edge
       ),
-    }), "Conexão atualizada");
+    }), "Conexão atualizada", options);
   }
 
   function removeFreeEdge(edgeId) {
@@ -842,35 +1118,110 @@ function App() {
   function autoLayout() {
     updateMap((current) => {
       const nodes = structuredClone(current.nodes);
+      const spanCache = new Map();
+      const leafSpan = 96;
 
-      const walk = (parentId, direction, depth) => {
+      const getSubtreeSpan = (nodeId, depth = 0) => {
+        const cacheKey = `${nodeId}:${depth}`;
+        if (spanCache.has(cacheKey)) return spanCache.get(cacheKey);
+
+        const node = nodes[nodeId];
+        if (!node) return leafSpan;
+
+        const nodeHeight = getNodeHeight(node, current.rootId) + 18;
+        if (node.children.length === 0) {
+          const span = Math.max(nodeHeight, leafSpan - Math.min(depth * 4, 18));
+          spanCache.set(cacheKey, span);
+          return span;
+        }
+
+        const verticalGap = Math.max(40 - depth * 2, 26);
+        const childrenSpan =
+          node.children.reduce((total, childId) => total + getSubtreeSpan(childId, depth + 1), 0) +
+          verticalGap * Math.max(node.children.length - 1, 0);
+        const span = Math.max(nodeHeight, childrenSpan);
+        spanCache.set(cacheKey, span);
+        return span;
+      };
+
+      const layoutBranch = (parentId, direction, depth = 0) => {
         const parent = nodes[parentId];
-        if (!parent) return;
-        const gapX = Math.max(230 - depth * 12, 150);
-        const gapY = Math.max(94 - depth * 4, 70);
-        const total = parent.children.length;
+        if (!parent || parent.children.length === 0) return;
+
+        const horizontalGap = depth === 0 ? 320 : Math.max(250 - depth * 14, 180);
+        const verticalGap = Math.max(40 - depth * 2, 26);
+        const spans = parent.children.map((childId) => getSubtreeSpan(childId, depth + 1));
+        const totalSpan = spans.reduce((sum, span) => sum + span, 0) + verticalGap * Math.max(spans.length - 1, 0);
+        let cursorY = parent.y + getNodeHeight(parent, current.rootId) / 2 - totalSpan / 2;
 
         parent.children.forEach((childId, index) => {
           const child = nodes[childId];
           if (!child) return;
-          child.x = parent.x + gapX * direction;
-          child.y = parent.y + index * gapY - ((total - 1) * gapY) / 2;
-          walk(childId, direction, depth + 1);
+
+          const childSpan = spans[index];
+          const childHeight = getNodeHeight(child, current.rootId);
+          const childCenterY = cursorY + childSpan / 2;
+
+          child.x = parent.x + direction * horizontalGap;
+          child.y = childCenterY - childHeight / 2;
+
+          layoutBranch(childId, direction, depth + 1);
+          cursorY += childSpan + verticalGap;
         });
       };
 
       const root = nodes[current.rootId];
       root.x = 0;
       root.y = 0;
-
-      root.children.forEach((childId, index) => {
-        const child = nodes[childId];
-        if (!child) return;
-        const direction = index % 2 === 0 ? -1 : 1;
-        child.x = root.x + 300 * direction;
-        child.y = root.y + Math.floor(index / 2) * 170 - 85;
-        walk(childId, direction, 1);
+      const sortedChildren = [...root.children].sort((a, b) => {
+        const spanDiff = getSubtreeSpan(b, 1) - getSubtreeSpan(a, 1);
+        if (spanDiff !== 0) return spanDiff;
+        return (nodes[a]?.y || 0) - (nodes[b]?.y || 0);
       });
+
+      const leftIds = [];
+      const rightIds = [];
+      let leftSpan = 0;
+      let rightSpan = 0;
+
+      sortedChildren.forEach((childId) => {
+        const span = getSubtreeSpan(childId, 1);
+        if (leftSpan <= rightSpan) {
+          leftIds.push(childId);
+          leftSpan += span;
+        } else {
+          rightIds.push(childId);
+          rightSpan += span;
+        }
+      });
+
+      root.children = [...leftIds, ...rightIds];
+
+      const placeRootSide = (childIds, direction) => {
+        if (childIds.length === 0) return;
+        const verticalGap = 48;
+        const totalSpan =
+          childIds.reduce((sum, childId) => sum + getSubtreeSpan(childId, 1), 0) +
+          verticalGap * Math.max(childIds.length - 1, 0);
+        let cursorY = root.y + getNodeHeight(root, current.rootId) / 2 - totalSpan / 2;
+
+        childIds.forEach((childId) => {
+          const child = nodes[childId];
+          if (!child) return;
+
+          const childSpan = getSubtreeSpan(childId, 1);
+          const childHeight = getNodeHeight(child, current.rootId);
+          const childCenterY = cursorY + childSpan / 2;
+
+          child.x = root.x + direction * 320;
+          child.y = childCenterY - childHeight / 2;
+          layoutBranch(childId, direction, 1);
+          cursorY += childSpan + verticalGap;
+        });
+      };
+
+      placeRootSide(leftIds, -1);
+      placeRootSide(rightIds, 1);
 
       return {
         ...current,
@@ -1014,9 +1365,8 @@ function App() {
           ...parsed,
           freeEdges: normalizeFreeEdges(parsed.freeEdges),
         };
-        setMap(normalizedMap);
+        updateMap(() => normalizedMap, "Mapa importado");
         setSelectedId(normalizedMap.rootId);
-        setStatus("Mapa importado");
         requestAnimationFrame(() => centerOnNode(normalizedMap.rootId));
       } catch {
         setStatus("JSON inválido");
@@ -1028,9 +1378,8 @@ function App() {
 
   function importMarkdownText(markdownText) {
     const parsedMap = parseMarkdownToMap(markdownText);
-    setMap(parsedMap);
+    updateMap(() => parsedMap, "Markdown convertido em mapa");
     setSelectedId(parsedMap.rootId);
-    setStatus("Markdown convertido em mapa");
     requestAnimationFrame(() => centerOnNode(parsedMap.rootId));
   }
 
@@ -1072,6 +1421,20 @@ function App() {
   }
 
   function handleCanvasPointerMove(event) {
+    if (freeEdgeDragRef.current) {
+      const world = getWorldPoint(event);
+      const { edgeId } = freeEdgeDragRef.current;
+      setFreeEdgeFields(
+        edgeId,
+        {
+          bendX: world.x,
+          bendY: world.y,
+        },
+        { group: `edge-bend:${edgeId}` }
+      );
+      return;
+    }
+
     if (dragRef.current) {
       const world = getWorldPoint(event);
       const { id, offsetX, offsetY } = dragRef.current;
@@ -1089,7 +1452,7 @@ function App() {
             },
           },
         };
-      });
+      }, undefined, { group: `drag:${id}` });
       return;
     }
 
@@ -1105,6 +1468,8 @@ function App() {
   function handleCanvasPointerUp() {
     dragRef.current = null;
     panRef.current = null;
+    freeEdgeDragRef.current = null;
+    clearHistoryGroup();
   }
 
   function handleNodePointerDown(event, node) {
@@ -1137,6 +1502,15 @@ function App() {
     setPendingConnectionFromId(null);
     setSelectedFreeEdgeId(edgeId);
     setActiveContextPanel(null);
+  }
+
+  function handleFreeEdgeHandlePointerDown(event, edgeId) {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedId(null);
+    setPendingConnectionFromId(null);
+    setSelectedFreeEdgeId(edgeId);
+    freeEdgeDragRef.current = { edgeId };
   }
 
   function handleWheel(event) {
@@ -1173,10 +1547,9 @@ function App() {
 
   function resetMap() {
     const freshMap = createInitialMap();
-    setMap(freshMap);
+    updateMap(() => freshMap, "Novo mapa criado");
     setSelectedId(freshMap.rootId);
     setViewport({ x: 0, y: 0, scale: 1 });
-    setStatus("Novo mapa criado");
     requestAnimationFrame(() => centerOnNode(freshMap.rootId));
   }
 
@@ -1319,15 +1692,15 @@ function App() {
       if (!parent) return;
 
       const { startX, startY, endX, endY } = getEdgeAnchors(parent, node, map.rootId);
-      const curve = Math.max(Math.abs(endX - startX) * 0.36, 52);
+      const { c1x, c1y, c2x, c2y } = getConnectionCurve(startX, startY, endX, endY, "tree");
 
       ctx.beginPath();
       ctx.moveTo(startX - exportBounds.minX + padding, startY - exportBounds.minY + padding);
       ctx.bezierCurveTo(
-        startX + curve - exportBounds.minX + padding,
-        startY - exportBounds.minY + padding,
-        endX - curve - exportBounds.minX + padding,
-        endY - exportBounds.minY + padding,
+        c1x - exportBounds.minX + padding,
+        c1y - exportBounds.minY + padding,
+        c2x - exportBounds.minX + padding,
+        c2y - exportBounds.minY + padding,
         endX - exportBounds.minX + padding,
         endY - exportBounds.minY + padding
       );
@@ -1344,29 +1717,48 @@ function App() {
       const toNode = map.nodes[edge.toId];
       if (!fromNode || !toNode) return;
 
-      const { startX, startY, endX, endY } = getFreeEdgeAnchors(fromNode, toNode, map.rootId);
-      const curve = Math.max(Math.abs(endX - startX) * 0.28 + Math.abs(endY - startY) * 0.12, 44);
+      const geometry = getFreeEdgeGeometry(edge, fromNode, toNode, map.rootId);
+      const edgeColor = edge.color || DEFAULT_FREE_EDGE_COLOR;
+      const edgeThickness = edge.thickness || DEFAULT_FREE_EDGE_THICKNESS;
 
       ctx.beginPath();
-      ctx.moveTo(startX - exportBounds.minX + padding, startY - exportBounds.minY + padding);
-      ctx.bezierCurveTo(
-        startX + curve - exportBounds.minX + padding,
-        startY - exportBounds.minY + padding,
-        endX - curve - exportBounds.minX + padding,
-        endY - exportBounds.minY + padding,
-        endX - exportBounds.minX + padding,
-        endY - exportBounds.minY + padding
-      );
-      ctx.strokeStyle = edge.color || DEFAULT_FREE_EDGE_COLOR;
-      ctx.lineWidth = 2;
+      geometry.points.forEach((point, index) => {
+        const x = point.x - exportBounds.minX + padding;
+        const y = point.y - exportBounds.minY + padding;
+        if (index === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.strokeStyle = edgeColor;
+      ctx.lineWidth = edgeThickness;
       ctx.lineCap = "round";
-      ctx.setLineDash([10, 8]);
+      ctx.lineJoin = "round";
+      ctx.setLineDash(
+        getFreeEdgeDasharray(edge.style)
+          .split(" ")
+          .filter(Boolean)
+          .map((value) => Number(value))
+      );
       ctx.stroke();
       ctx.setLineDash([]);
 
+      if (edge.arrow) {
+        const endPoint = geometry.points[geometry.points.length - 1];
+        drawArrowHead(
+          ctx,
+          endPoint.x - exportBounds.minX + padding,
+          endPoint.y - exportBounds.minY + padding,
+          geometry.arrowAngle,
+          8 + edgeThickness * 1.6,
+          edgeColor
+        );
+      }
+
       if (edge.label) {
-        const labelX = (startX + endX) / 2 - exportBounds.minX + padding;
-        const labelY = (startY + endY) / 2 - exportBounds.minY + padding - 8;
+        const labelX = geometry.labelX - exportBounds.minX + padding;
+        const labelY = geometry.labelY - exportBounds.minY + padding;
         ctx.font = "600 12px Manrope";
         const labelWidth = ctx.measureText(edge.label).width + 18;
         roundRectPath(ctx, labelX - labelWidth / 2, labelY - 14, labelWidth, 24, 12);
@@ -1476,7 +1868,7 @@ function App() {
               className="map-title-input"
               value={map.title}
               onChange={(event) =>
-                setMap((current) => ({
+                updateMap((current) => ({
                   ...current,
                   title: event.target.value,
                   nodes: {
@@ -1486,12 +1878,19 @@ function App() {
                       title: event.target.value || "Meu novo mapa mental",
                     },
                   },
-                }))
+                }), "Mapa atualizado", { group: "map-title" })
               }
+              onBlur={clearHistoryGroup}
               placeholder="Nome do mapa mental"
             />
           </div>
           <div className="toolbar">
+            <button onClick={undoMap} disabled={!canUndo} title="Desfazer (Cmd/Ctrl+Z)">
+              <Undo2 size={16} strokeWidth={2.2} />
+            </button>
+            <button onClick={redoMap} disabled={!canRedo} title="Refazer (Shift+Cmd/Ctrl+Z)">
+              <Redo2 size={16} strokeWidth={2.2} />
+            </button>
             <button onClick={resetMap}>Novo</button>
             <button onClick={centerVisibleMap}>Centralizar</button>
             <button onClick={autoLayout}>Auto layout</button>
@@ -1509,24 +1908,43 @@ function App() {
             const fromNode = map.nodes[edge.fromId];
             const toNode = map.nodes[edge.toId];
             if (!fromNode || !toNode) return null;
-            const { startX, startY, endX, endY } = getFreeEdgeAnchors(fromNode, toNode, map.rootId);
-            const curve = Math.max(Math.abs(endX - startX) * 0.28 + Math.abs(endY - startY) * 0.12, 44);
-            const labelX = (startX + endX) / 2;
-            const labelY = (startY + endY) / 2 - 8;
+            const geometry = getFreeEdgeGeometry(edge, fromNode, toNode, map.rootId);
             const labelWidth = Math.max(56, edge.label.length * 7 + 18);
+            const edgeThickness = edge.thickness || DEFAULT_FREE_EDGE_THICKNESS;
 
             return (
               <g key={edge.id}>
                 <path
                   className={`free-edge ${selectedFreeEdgeId === edge.id ? "selected" : ""}`}
-                  d={`M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`}
+                  d={geometry.pathD}
                   stroke={edge.color || DEFAULT_FREE_EDGE_COLOR}
+                  strokeDasharray={getFreeEdgeDasharray(edge.style) || undefined}
+                  strokeWidth={selectedFreeEdgeId === edge.id ? edgeThickness + 1 : edgeThickness}
                   onPointerDown={(event) => handleFreeEdgePointerDown(event, edge.id)}
                 />
+                {edge.arrow ? (
+                  <polygon
+                    className="free-edge-arrow"
+                    points={getArrowHeadPoints(
+                      geometry.endX,
+                      geometry.endY,
+                      geometry.arrowAngle,
+                      8 + edgeThickness * 1.6
+                    )}
+                    fill={edge.color || DEFAULT_FREE_EDGE_COLOR}
+                    onPointerDown={(event) => handleFreeEdgePointerDown(event, edge.id)}
+                  />
+                ) : null}
                 {edge.label ? (
                   <g className="free-edge-label" onPointerDown={(event) => handleFreeEdgePointerDown(event, edge.id)}>
-                    <rect x={labelX - labelWidth / 2} y={labelY - 14} width={labelWidth} height="24" rx="12" />
-                    <text x={labelX} y={labelY + 2}>{edge.label}</text>
+                    <rect
+                      x={geometry.labelX - labelWidth / 2}
+                      y={geometry.labelY - 14}
+                      width={labelWidth}
+                      height="24"
+                      rx="12"
+                    />
+                    <text x={geometry.labelX} y={geometry.labelY + 2}>{edge.label}</text>
                   </g>
                 ) : null}
               </g>
@@ -1583,7 +2001,10 @@ function App() {
                     <input
                       className="node-title-input"
                       value={node.title}
-                      onChange={(event) => setNodeField(node.id, "title", event.target.value)}
+                      onChange={(event) =>
+                        setNodeField(node.id, "title", event.target.value, { group: `title:${node.id}` })
+                      }
+                      onBlur={clearHistoryGroup}
                       placeholder="Titulo do topico"
                     />
                   ) : (
@@ -1610,7 +2031,10 @@ function App() {
                     className="node-note-input"
                     rows="2"
                     value={node.note}
-                    onChange={(event) => setNodeField(node.id, "note", event.target.value)}
+                    onChange={(event) =>
+                      setNodeField(node.id, "note", event.target.value, { group: `note:${node.id}` })
+                    }
+                    onBlur={clearHistoryGroup}
                     placeholder="Adicione uma nota"
                   />
                 </div>
@@ -1651,6 +2075,15 @@ function App() {
 
         {selectedFreeEdge && selectedFreeEdgeOverlay ? (
           <>
+            <button
+              className="free-edge-handle"
+              style={{
+                left: selectedFreeEdgeOverlay.handleLeft,
+                top: selectedFreeEdgeOverlay.handleTop,
+              }}
+              onPointerDown={(event) => handleFreeEdgeHandlePointerDown(event, selectedFreeEdge.id)}
+              title="Arraste para dobrar a linha"
+            />
             <div
               className="selection-toolbar free-edge-toolbar"
               style={{
@@ -1668,6 +2101,15 @@ function App() {
                 }
               >
                 <Palette size={14} strokeWidth={2.2} />
+              </button>
+              <button
+                className={activeContextPanel === "free-edge-style" ? "active-connection" : ""}
+                title="Estilo da conexão"
+                onClick={() =>
+                  setActiveContextPanel((current) => (current === "free-edge-style" ? null : "free-edge-style"))
+                }
+              >
+                ≈
               </button>
               <button
                 title="Rotulo da conexão"
@@ -1709,6 +2151,96 @@ function App() {
                       }}
                     />
                   ))}
+                </div>
+              </div>
+            ) : null}
+
+            {activeContextPanel === "free-edge-style" ? (
+              <div
+                className="context-popover free-edge-style-popover"
+                style={{
+                  left: selectedFreeEdgeOverlay.left,
+                  top: selectedFreeEdgeOverlay.top + 2,
+                }}
+                onPointerDown={stopCanvasPointerFlow}
+                onClick={stopCanvasPropagation}
+              >
+                <div className="popover-group">
+                  <p className="popover-label">Estilo</p>
+                  <div className="chip-row">
+                    {FREE_EDGE_STYLE_OPTIONS.map((option) => (
+                      <button
+                        key={option.id}
+                        className={`option-chip ${selectedFreeEdge.style === option.id ? "active" : ""}`}
+                        onClick={() => setFreeEdgeFields(selectedFreeEdge.id, { style: option.id })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="popover-group">
+                  <p className="popover-label">Espessura</p>
+                  <div className="chip-row">
+                    {FREE_EDGE_THICKNESS_OPTIONS.map((value) => (
+                      <button
+                        key={`thickness-${value}`}
+                        className={`option-chip ${selectedFreeEdge.thickness === value ? "active" : ""}`}
+                        onClick={() => setFreeEdgeFields(selectedFreeEdge.id, { thickness: value })}
+                      >
+                        {value}px
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="popover-group">
+                  <p className="popover-label">Finalização</p>
+                  <div className="chip-row">
+                    <button
+                      className={`option-chip ${!selectedFreeEdge.arrow ? "active" : ""}`}
+                      onClick={() => setFreeEdgeFields(selectedFreeEdge.id, { arrow: false })}
+                    >
+                      Sem seta
+                    </button>
+                    <button
+                      className={`option-chip ${selectedFreeEdge.arrow ? "active" : ""}`}
+                      onClick={() => setFreeEdgeFields(selectedFreeEdge.id, { arrow: true })}
+                    >
+                      Com seta
+                    </button>
+                  </div>
+                </div>
+
+                <div className="popover-group">
+                  <p className="popover-label">Origem da linha</p>
+                  <div className="chip-row">
+                    {FREE_EDGE_ANCHOR_OPTIONS.map((option) => (
+                      <button
+                        key={`from-anchor-${option.id}`}
+                        className={`option-chip ${selectedFreeEdge.fromAnchor === option.id ? "active" : ""}`}
+                        onClick={() => setFreeEdgeFields(selectedFreeEdge.id, { fromAnchor: option.id })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="popover-group">
+                  <p className="popover-label">Destino da linha</p>
+                  <div className="chip-row">
+                    {FREE_EDGE_ANCHOR_OPTIONS.map((option) => (
+                      <button
+                        key={`to-anchor-${option.id}`}
+                        className={`option-chip ${selectedFreeEdge.toAnchor === option.id ? "active" : ""}`}
+                        onClick={() => setFreeEdgeFields(selectedFreeEdge.id, { toAnchor: option.id })}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -2162,27 +2694,34 @@ function App() {
             const toNode = map.nodes[edge.toId];
             if (!fromNode || !toNode) return null;
 
-            const fromCenter = getNodeCenter(fromNode, map.rootId);
-            const toCenter = getNodeCenter(toNode, map.rootId);
-            const x1 = (fromCenter.x - bounds.minX) * miniScale + 8;
-            const y1 = (fromCenter.y - bounds.minY) * miniScale + 8;
-            const x2 = (toCenter.x - bounds.minX) * miniScale + 8;
-            const y2 = (toCenter.y - bounds.minY) * miniScale + 8;
-            const length = Math.hypot(x2 - x1, y2 - y1);
-            const angle = Math.atan2(y2 - y1, x2 - x1);
+            const geometry = getFreeEdgeGeometry(edge, fromNode, toNode, map.rootId);
 
-            return (
-              <div
-                key={`free-${edge.id}`}
-                className="mini-edge mini-edge-free"
-                style={{
-                  left: x1,
-                  top: y1,
-                  width: length,
-                  transform: `rotate(${angle}rad)`,
-                }}
-              />
-            );
+            return geometry.points.slice(0, -1).map((point, index) => {
+              const nextPoint = geometry.points[index + 1];
+              const x1 = (point.x - bounds.minX) * miniScale + 8;
+              const y1 = (point.y - bounds.minY) * miniScale + 8;
+              const x2 = (nextPoint.x - bounds.minX) * miniScale + 8;
+              const y2 = (nextPoint.y - bounds.minY) * miniScale + 8;
+              const length = Math.hypot(x2 - x1, y2 - y1);
+              const angle = Math.atan2(y2 - y1, x2 - x1);
+
+              return (
+                <div
+                  key={`free-${edge.id}-${index}`}
+                  className="mini-edge mini-edge-free"
+                  style={{
+                    left: x1,
+                    top: y1,
+                    width: length,
+                    borderTopWidth: `${Math.max(1, (edge.thickness || DEFAULT_FREE_EDGE_THICKNESS) - 1)}px`,
+                    borderTopStyle:
+                      edge.style === "dotted" ? "dotted" : edge.style === "solid" ? "solid" : "dashed",
+                    borderTopColor: edge.color || DEFAULT_FREE_EDGE_COLOR,
+                    transform: `rotate(${angle}rad)`,
+                  }}
+                />
+              );
+            });
           })}
 
           {visibleNodes.map((node) => (

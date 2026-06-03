@@ -211,9 +211,69 @@ button {
   border-color: rgba(15, 23, 42, 0.06);
 }
 
+.free-edge-handle {
+  position: absolute;
+  z-index: 5;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 999px;
+  border: 2px solid #4d7cff;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(77, 124, 255, 0.18);
+  transform: translate(-50%, -50%);
+}
+
+.free-edge-handle:hover {
+  box-shadow: 0 10px 20px rgba(77, 124, 255, 0.24);
+}
+
 .free-edge-toolbar button {
   min-width: 34px;
   padding: 0 10px;
+}
+
+.free-edge-style-popover {
+  width: 292px;
+  display: grid;
+  gap: 14px;
+}
+
+.popover-group {
+  display: grid;
+  gap: 8px;
+}
+
+.popover-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.option-chip {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(248, 250, 252, 0.9);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.option-chip.active {
+  background: rgba(77, 124, 255, 0.12);
+  border-color: rgba(77, 124, 255, 0.28);
+  color: #1d4ed8;
 }
 
 .toolbar-color-button {
@@ -458,19 +518,21 @@ button {
 
 .free-edge {
   fill: none;
-  stroke-width: 2.5;
   stroke-linecap: round;
-  stroke-dasharray: 10 8;
   pointer-events: stroke;
   cursor: pointer;
 }
 
 .free-edge.selected {
-  stroke-width: 3.5;
+  filter: drop-shadow(0 0 6px rgba(77, 124, 255, 0.18));
 }
 
 .tree-edge {
   pointer-events: none;
+}
+
+.free-edge-arrow {
+  cursor: pointer;
 }
 
 .free-edge-label rect {

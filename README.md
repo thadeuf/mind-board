@@ -6,7 +6,7 @@ Editor de mapa mental visual feito em `React + Vite`, com foco em um fluxo limpo
 
 - Canvas interativo com criação e edição rápida de nós
 - Edição inline de título e nota diretamente nos cards
-- Conexões livres entre nós com linha tracejada
+- Conexões livres entre nós com estilos, seta e dobra arrastável
 - Imagens por upload local ou URL
 - Links por nó
 - Importação de `Markdown` e `JSON`
@@ -86,8 +86,10 @@ npm run preview
 - editar nota diretamente no card
 - alterar cor dos nós
 - alterar a cor completa do card principal
-- conectar nós fora da mesma hierarquia com linha tracejada
-- editar cor, rótulo e remoção de conexões livres
+- conectar nós fora da mesma hierarquia com linhas livres
+- editar cor, rótulo, estilo, espessura e seta das conexões livres
+- escolher âncoras por lado (`topo`, `baixo`, `esquerda`, `direita` ou `auto`)
+- arrastar o ponto de dobra da conexão livre para criar trajetos ortogonais
 
 ### Navegação
 
@@ -165,7 +167,9 @@ Na exportação visual, o sistema:
 1. Selecione um nó
 2. Clique no ícone de conexão na toolbar contextual
 3. Clique em outro nó
-4. Clique na linha tracejada para editar cor, rótulo ou excluir
+4. Clique na linha para editar cor, rótulo, estilo, espessura e seta
+5. Arraste a alça azul da conexão para criar uma dobra manual
+6. Se quiser, troque a âncora de origem e destino para `topo`, `baixo`, `esquerda`, `direita` ou `auto`
 
 ### Importar um resumo em Markdown
 
@@ -219,6 +223,7 @@ npm run preview
 - alguns cálculos de layout ainda usam estimativas
 - imagens e links ainda não têm edição avançada
 - o renderer manual de exportação ainda pode divergir sutilmente do canvas em casos mais ricos
+- conexões livres ainda usam uma única dobra manual por linha
 
 ## Troubleshooting
 
@@ -237,6 +242,7 @@ O sistema já faz recorte automático por área útil e ainda aplica um corte fi
 - melhorar o cálculo de altura real dos cards
 - refinar a barra contextual
 - melhorar os modais de mídia e link
+- permitir múltiplas dobras por conexão livre
 
 ### Médio prazo
 
@@ -258,6 +264,7 @@ O sistema já faz recorte automático por área útil e ainda aplica um corte fi
 - refinar o renderer manual de exportação
 - medir altura real dos nós via DOM
 - permitir redimensionar imagens
+- suportar múltiplos pontos de dobra nas conexões livres
 - permitir trocar imagem existente sem reabrir o fluxo completo
 - adicionar opção de ocultar minimapa
 - melhorar a experiência mobile
