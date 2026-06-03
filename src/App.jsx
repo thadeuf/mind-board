@@ -8,6 +8,7 @@ import {
   Unlink,
   Copy,
   Trash2,
+  Workflow,
   X,
 } from "lucide-react";
 
@@ -30,6 +31,20 @@ const EMPTY_ASSET_MODAL = {
   nodeId: null,
   url: "",
 };
+const DEFAULT_FREE_EDGE_COLOR = "#475569";
+
+function normalizeFreeEdges(freeEdges) {
+  if (!Array.isArray(freeEdges)) return [];
+  return freeEdges
+    .filter((edge) => edge?.fromId && edge?.toId)
+    .map((edge) => ({
+      id: edge.id || `${[edge.fromId, edge.toId].sort().join(":")}`,
+      fromId: edge.fromId,
+      toId: edge.toId,
+      color: edge.color || DEFAULT_FREE_EDGE_COLOR,
+      label: edge.label || "",
+    }));
+}
 
 function makeId() {
   return Math.random().toString(36).slice(2, 10);
@@ -41,6 +56,7 @@ function createInitialMap() {
   return {
     title: "Novo mapa mental",
     rootId,
+    freeEdges: [],
     nodes: {
       [rootId]: {
         id: rootId,
@@ -64,7 +80,10 @@ function loadMap() {
   try {
     const parsed = JSON.parse(raw);
     if (!parsed?.rootId || !parsed?.nodes) return createInitialMap();
-    return parsed;
+    return {
+      ...parsed,
+      freeEdges: normalizeFreeEdges(parsed.freeEdges),
+    };
   } catch {
     return createInitialMap();
   }
@@ -80,6 +99,7 @@ function parseMarkdownToMap(markdown) {
   const map = {
     title: "Mapa importado",
     rootId,
+    freeEdges: [],
     nodes: {
       [rootId]: {
         id: rootId,
@@ -287,6 +307,51 @@ function getVisibleMapBounds(nodes, rootId) {
   );
 }
 
+function makeFreeEdge(fromId, toId) {
+  const [a, b] = [fromId, toId].sort();
+  return {
+    id: `${a}:${b}`,
+    fromId: a,
+    toId: b,
+    color: DEFAULT_FREE_EDGE_COLOR,
+    label: "",
+  };
+}
+
+function getNodeCenter(node, rootId) {
+  return {
+    x: node.x + getNodeWidth(node, rootId) / 2,
+    y: node.y + getNodeHeight(node, rootId) / 2,
+  };
+}
+
+function getFreeEdgeAnchors(fromNode, toNode, rootId) {
+  const fromWidth = getNodeWidth(fromNode, rootId);
+  const fromHeight = getNodeHeight(fromNode, rootId);
+  const toWidth = getNodeWidth(toNode, rootId);
+  const toHeight = getNodeHeight(toNode, rootId);
+  const fromCenter = getNodeCenter(fromNode, rootId);
+  const toCenter = getNodeCenter(toNode, rootId);
+  const deltaX = toCenter.x - fromCenter.x;
+  const deltaY = toCenter.y - fromCenter.y;
+
+  if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+    return {
+      startX: deltaX >= 0 ? fromNode.x + fromWidth : fromNode.x,
+      startY: fromCenter.y,
+      endX: deltaX >= 0 ? toNode.x : toNode.x + toWidth,
+      endY: toCenter.y,
+    };
+  }
+
+  return {
+    startX: fromCenter.x,
+    startY: deltaY >= 0 ? fromNode.y + fromHeight : fromNode.y,
+    endX: toCenter.x,
+    endY: deltaY >= 0 ? toNode.y : toNode.y + toHeight,
+  };
+}
+
 function trimCanvasWhitespace(sourceCanvas, padding = 24) {
   const sourceContext = sourceCanvas.getContext("2d");
   if (!sourceContext) return sourceCanvas;
@@ -362,6 +427,10 @@ function App() {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [activeContextPanel, setActiveContextPanel] = useState(null);
   const [assetModal, setAssetModal] = useState(EMPTY_ASSET_MODAL);
+  const [pendingConnectionFromId, setPendingConnectionFromId] = useState(null);
+  const [selectedFreeEdgeId, setSelectedFreeEdgeId] = useState(null);
+  const [freeEdgeLabelDraft, setFreeEdgeLabelDraft] = useState("");
+  const [isFreeEdgeLabelModalOpen, setIsFreeEdgeLabelModalOpen] = useState(false);
   const frameRef = useRef(null);
   const dragRef = useRef(null);
   const panRef = useRef(null);
@@ -416,6 +485,9 @@ function App() {
         setContextMenu(null);
         setActiveContextPanel(null);
         setAssetModal(EMPTY_ASSET_MODAL);
+        setPendingConnectionFromId(null);
+        setSelectedFreeEdgeId(null);
+        setIsFreeEdgeLabelModalOpen(false);
       }
     };
 
@@ -450,6 +522,31 @@ function App() {
   }, [map]);
 
   const selectedNode = selectedId ? map.nodes[selectedId] : null;
+  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
+  const visibleFreeEdges = useMemo(
+    () =>
+      (map.freeEdges || []).filter(
+        (edge) => visibleNodeIds.has(edge.fromId) && visibleNodeIds.has(edge.toId)
+      ),
+    [map.freeEdges, visibleNodeIds]
+  );
+  const selectedFreeEdge = selectedFreeEdgeId
+    ? (map.freeEdges || []).find((edge) => edge.id === selectedFreeEdgeId) || null
+    : null;
+  const selectedFreeEdgeOverlay = useMemo(() => {
+    if (!selectedFreeEdge) return null;
+    const fromNode = map.nodes[selectedFreeEdge.fromId];
+    const toNode = map.nodes[selectedFreeEdge.toId];
+    if (!fromNode || !toNode) return null;
+    const fromCenter = getNodeCenter(fromNode, map.rootId);
+    const toCenter = getNodeCenter(toNode, map.rootId);
+    const midX = (fromCenter.x + toCenter.x) / 2;
+    const midY = (fromCenter.y + toCenter.y) / 2;
+    return {
+      left: midX * viewport.scale + viewport.x,
+      top: midY * viewport.scale + viewport.y,
+    };
+  }, [selectedFreeEdge, map.nodes, map.rootId, viewport]);
   const selectedNodeMetrics = selectedNode
     ? {
         width: getNodeWidth(selectedNode, map.rootId),
@@ -514,6 +611,75 @@ function App() {
         },
       };
     }, "Mapa atualizado");
+  }
+
+  function startFreeConnection(nodeId) {
+    setPendingConnectionFromId(nodeId);
+    setSelectedFreeEdgeId(null);
+    setActiveContextPanel(null);
+    setStatus("Selecione outro nó para criar a conexão livre");
+    setContextMenu(null);
+  }
+
+  function clearFreeConnections(nodeId) {
+    updateMap((current) => ({
+      ...current,
+      freeEdges: (current.freeEdges || []).filter(
+        (edge) => edge.fromId !== nodeId && edge.toId !== nodeId
+      ),
+    }), "Conexões livres removidas");
+    setPendingConnectionFromId(null);
+  }
+
+  function setFreeEdgeFields(edgeId, patch) {
+    updateMap((current) => ({
+      ...current,
+      freeEdges: (current.freeEdges || []).map((edge) =>
+        edge.id === edgeId
+          ? {
+              ...edge,
+              ...patch,
+            }
+          : edge
+      ),
+    }), "Conexão atualizada");
+  }
+
+  function removeFreeEdge(edgeId) {
+    updateMap((current) => ({
+      ...current,
+      freeEdges: (current.freeEdges || []).filter((edge) => edge.id !== edgeId),
+    }), "Conexão removida");
+    setSelectedFreeEdgeId(null);
+    setIsFreeEdgeLabelModalOpen(false);
+  }
+
+  function connectNodesFreely(fromId, toId) {
+    if (!fromId || !toId || fromId === toId) {
+      setPendingConnectionFromId(null);
+      return;
+    }
+
+    const nextEdge = makeFreeEdge(fromId, toId);
+    const alreadyExists = (map.freeEdges || []).some((edge) => edge.id === nextEdge.id);
+    if (alreadyExists) {
+      setPendingConnectionFromId(null);
+      setSelectedFreeEdgeId(nextEdge.id);
+      setSelectedId(null);
+      setStatus("Conexão livre selecionada");
+      return;
+    }
+
+    updateMap((current) => {
+      const freeEdges = current.freeEdges || [];
+      return {
+        ...current,
+        freeEdges: [...freeEdges, nextEdge],
+      };
+    }, "Conexão livre criada");
+    setPendingConnectionFromId(null);
+    setSelectedFreeEdgeId(nextEdge.id);
+    setSelectedId(null);
   }
 
   function openAssetModal(type, nodeId) {
@@ -631,6 +797,9 @@ function App() {
 
       return {
         ...current,
+        freeEdges: (current.freeEdges || []).filter(
+          (edge) => !toDelete.includes(edge.fromId) && !toDelete.includes(edge.toId)
+        ),
         nodes,
       };
     }, "Tópico removido");
@@ -841,10 +1010,14 @@ function App() {
       try {
         const parsed = JSON.parse(String(reader.result));
         if (!parsed.rootId || !parsed.nodes) throw new Error();
-        setMap(parsed);
-        setSelectedId(parsed.rootId);
+        const normalizedMap = {
+          ...parsed,
+          freeEdges: normalizeFreeEdges(parsed.freeEdges),
+        };
+        setMap(normalizedMap);
+        setSelectedId(normalizedMap.rootId);
         setStatus("Mapa importado");
-        requestAnimationFrame(() => centerOnNode(parsed.rootId));
+        requestAnimationFrame(() => centerOnNode(normalizedMap.rootId));
       } catch {
         setStatus("JSON inválido");
       }
@@ -894,6 +1067,8 @@ function App() {
     }
 
     setSelectedId(null);
+    setPendingConnectionFromId(null);
+    setSelectedFreeEdgeId(null);
   }
 
   function handleCanvasPointerMove(event) {
@@ -939,6 +1114,13 @@ function App() {
     }
 
     event.stopPropagation();
+
+    if (pendingConnectionFromId && pendingConnectionFromId !== node.id) {
+      connectNodesFreely(pendingConnectionFromId, node.id);
+      return;
+    }
+
+    setSelectedFreeEdgeId(null);
     setSelectedId(node.id);
 
     const world = getWorldPoint(event);
@@ -947,6 +1129,14 @@ function App() {
       offsetX: world.x - node.x,
       offsetY: world.y - node.y,
     };
+  }
+
+  function handleFreeEdgePointerDown(event, edgeId) {
+    event.stopPropagation();
+    setSelectedId(null);
+    setPendingConnectionFromId(null);
+    setSelectedFreeEdgeId(edgeId);
+    setActiveContextPanel(null);
   }
 
   function handleWheel(event) {
@@ -1051,6 +1241,14 @@ function App() {
       duplicateNode(contextMenu.nodeId);
     }
 
+    if (action === "connect" && contextMenu.nodeId) {
+      startFreeConnection(contextMenu.nodeId);
+    }
+
+    if (action === "clear-links" && contextMenu.nodeId) {
+      clearFreeConnections(contextMenu.nodeId);
+    }
+
     if (action === "image" && contextMenu.nodeId) {
       openAssetModal("image", contextMenu.nodeId);
     }
@@ -1139,6 +1337,49 @@ function App() {
       ctx.lineCap = "round";
       ctx.stroke();
       ctx.globalAlpha = 1;
+    });
+
+    visibleFreeEdges.forEach((edge) => {
+      const fromNode = map.nodes[edge.fromId];
+      const toNode = map.nodes[edge.toId];
+      if (!fromNode || !toNode) return;
+
+      const { startX, startY, endX, endY } = getFreeEdgeAnchors(fromNode, toNode, map.rootId);
+      const curve = Math.max(Math.abs(endX - startX) * 0.28 + Math.abs(endY - startY) * 0.12, 44);
+
+      ctx.beginPath();
+      ctx.moveTo(startX - exportBounds.minX + padding, startY - exportBounds.minY + padding);
+      ctx.bezierCurveTo(
+        startX + curve - exportBounds.minX + padding,
+        startY - exportBounds.minY + padding,
+        endX - curve - exportBounds.minX + padding,
+        endY - exportBounds.minY + padding,
+        endX - exportBounds.minX + padding,
+        endY - exportBounds.minY + padding
+      );
+      ctx.strokeStyle = edge.color || DEFAULT_FREE_EDGE_COLOR;
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.setLineDash([10, 8]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      if (edge.label) {
+        const labelX = (startX + endX) / 2 - exportBounds.minX + padding;
+        const labelY = (startY + endY) / 2 - exportBounds.minY + padding - 8;
+        ctx.font = "600 12px Manrope";
+        const labelWidth = ctx.measureText(edge.label).width + 18;
+        roundRectPath(ctx, labelX - labelWidth / 2, labelY - 14, labelWidth, 24, 12);
+        ctx.fillStyle = "rgba(255,255,255,0.96)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(148,163,184,0.24)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = "#334155";
+        ctx.textAlign = "center";
+        ctx.fillText(edge.label, labelX, labelY + 3);
+        ctx.textAlign = "start";
+      }
     });
 
     visibleNodes.forEach((node) => {
@@ -1264,6 +1505,33 @@ function App() {
         </div>
 
         <svg className="edge-layer" style={transformStyle}>
+          {visibleFreeEdges.map((edge) => {
+            const fromNode = map.nodes[edge.fromId];
+            const toNode = map.nodes[edge.toId];
+            if (!fromNode || !toNode) return null;
+            const { startX, startY, endX, endY } = getFreeEdgeAnchors(fromNode, toNode, map.rootId);
+            const curve = Math.max(Math.abs(endX - startX) * 0.28 + Math.abs(endY - startY) * 0.12, 44);
+            const labelX = (startX + endX) / 2;
+            const labelY = (startY + endY) / 2 - 8;
+            const labelWidth = Math.max(56, edge.label.length * 7 + 18);
+
+            return (
+              <g key={edge.id}>
+                <path
+                  className={`free-edge ${selectedFreeEdgeId === edge.id ? "selected" : ""}`}
+                  d={`M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`}
+                  stroke={edge.color || DEFAULT_FREE_EDGE_COLOR}
+                  onPointerDown={(event) => handleFreeEdgePointerDown(event, edge.id)}
+                />
+                {edge.label ? (
+                  <g className="free-edge-label" onPointerDown={(event) => handleFreeEdgePointerDown(event, edge.id)}>
+                    <rect x={labelX - labelWidth / 2} y={labelY - 14} width={labelWidth} height="24" rx="12" />
+                    <text x={labelX} y={labelY + 2}>{edge.label}</text>
+                  </g>
+                ) : null}
+              </g>
+            );
+          })}
           {visibleNodes.map((node) => {
             if (!node.parentId) return null;
             const parent = map.nodes[node.parentId];
@@ -1274,6 +1542,7 @@ function App() {
             return (
               <path
                 key={`${parent.id}-${node.id}`}
+                className="tree-edge"
                 d={`M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`}
                 fill="none"
                 stroke={selectedId === node.id || selectedId === parent.id ? "#4d7cff" : node.color}
@@ -1290,6 +1559,7 @@ function App() {
             <article
               key={node.id}
               className={`node-card ${selectedId === node.id ? "selected" : ""} ${node.id === map.rootId ? "root" : ""}`}
+              data-pending-connection={pendingConnectionFromId === node.id ? "true" : undefined}
               style={{
                 left: node.x,
                 top: node.y,
@@ -1379,6 +1649,72 @@ function App() {
 
         <div className="status-bar">{status}</div>
 
+        {selectedFreeEdge && selectedFreeEdgeOverlay ? (
+          <>
+            <div
+              className="selection-toolbar free-edge-toolbar"
+              style={{
+                left: selectedFreeEdgeOverlay.left,
+                top: selectedFreeEdgeOverlay.top - 48,
+              }}
+              onPointerDown={stopCanvasPointerFlow}
+              onClick={stopCanvasPropagation}
+            >
+              <button
+                className={`toolbar-color-button ${activeContextPanel === "free-edge-color" ? "active" : ""}`}
+                title="Cor da conexão"
+                onClick={() =>
+                  setActiveContextPanel((current) => (current === "free-edge-color" ? null : "free-edge-color"))
+                }
+              >
+                <Palette size={14} strokeWidth={2.2} />
+              </button>
+              <button
+                title="Rotulo da conexão"
+                onClick={() => {
+                  setFreeEdgeLabelDraft(selectedFreeEdge.label || "");
+                  setIsFreeEdgeLabelModalOpen(true);
+                }}
+              >
+                T
+              </button>
+              <button
+                title="Excluir conexão"
+                className="danger"
+                onClick={() => removeFreeEdge(selectedFreeEdge.id)}
+              >
+                <Trash2 size={16} strokeWidth={2.2} />
+              </button>
+            </div>
+
+            {activeContextPanel === "free-edge-color" ? (
+              <div
+                className="context-popover color-popover"
+                style={{
+                  left: selectedFreeEdgeOverlay.left,
+                  top: selectedFreeEdgeOverlay.top + 2,
+                }}
+                onPointerDown={stopCanvasPointerFlow}
+                onClick={stopCanvasPropagation}
+              >
+                <div className="color-swatch-grid">
+                  {[DEFAULT_FREE_EDGE_COLOR, ...NODE_COLORS].map((color) => (
+                    <button
+                      key={`edge-color-${color}`}
+                      className={`color-swatch ${selectedFreeEdge.color === color ? "active" : ""}`}
+                      style={{ "--swatch-color": color }}
+                      onClick={() => {
+                        setFreeEdgeFields(selectedFreeEdge.id, { color });
+                        setActiveContextPanel(null);
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
         {selectedNode && selectedNodeOverlay ? (
           <>
             <div
@@ -1401,6 +1737,20 @@ function App() {
                 }
               >
                 <Palette size={14} strokeWidth={2.2} />
+              </button>
+              <button
+                title="Conectar livremente"
+                className={pendingConnectionFromId === selectedNode.id ? "active-connection" : ""}
+                onClick={() => {
+                  if (pendingConnectionFromId === selectedNode.id) {
+                    setPendingConnectionFromId(null);
+                    setStatus("Conexão livre cancelada");
+                    return;
+                  }
+                  startFreeConnection(selectedNode.id);
+                }}
+              >
+                <Workflow size={16} strokeWidth={2.2} />
               </button>
               <button
                 title="Imagem"
@@ -1529,6 +1879,12 @@ function App() {
             <button onClick={() => runContextAction("create")}>Criar</button>
             <button onClick={() => runContextAction("duplicate")} disabled={contextMenu.type !== "node"}>
               Duplicar
+            </button>
+            <button onClick={() => runContextAction("connect")} disabled={contextMenu.type !== "node"}>
+              Conectar
+            </button>
+            <button onClick={() => runContextAction("clear-links")} disabled={contextMenu.type !== "node"}>
+              Remover conexões
             </button>
             <button onClick={() => runContextAction("image")} disabled={contextMenu.type !== "node"}>
               Imagem
@@ -1678,6 +2034,59 @@ function App() {
           </div>
         ) : null}
 
+        {isFreeEdgeLabelModalOpen && selectedFreeEdge ? (
+          <div
+            className="modal-backdrop"
+            onPointerDown={() => {
+              setIsFreeEdgeLabelModalOpen(false);
+            }}
+          >
+            <div
+              className="markdown-modal asset-modal"
+              onPointerDown={stopCanvasPropagation}
+              onClick={stopCanvasPropagation}
+            >
+              <div className="markdown-modal-head">
+                <div>
+                  <p className="label">Conexão</p>
+                  <h3>Editar rótulo da conexão</h3>
+                </div>
+                <button onClick={() => setIsFreeEdgeLabelModalOpen(false)}>×</button>
+              </div>
+
+              <label className="asset-field">
+                <span>Texto do rótulo</span>
+                <input
+                  value={freeEdgeLabelDraft}
+                  onChange={(event) => setFreeEdgeLabelDraft(event.target.value)}
+                  placeholder="Ex.: depende de, relacionado a, referência"
+                />
+              </label>
+
+              <div className="markdown-modal-actions">
+                <button
+                  onClick={() => {
+                    setFreeEdgeFields(selectedFreeEdge.id, { label: "" });
+                    setIsFreeEdgeLabelModalOpen(false);
+                  }}
+                  disabled={!selectedFreeEdge.label}
+                >
+                  Remover rótulo
+                </button>
+                <button onClick={() => setIsFreeEdgeLabelModalOpen(false)}>Cancelar</button>
+                <button
+                  onClick={() => {
+                    setFreeEdgeFields(selectedFreeEdge.id, { label: freeEdgeLabelDraft.trim() });
+                    setIsFreeEdgeLabelModalOpen(false);
+                  }}
+                >
+                  Salvar
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {isExportModalOpen ? (
           <div className="modal-backdrop" onPointerDown={() => setIsExportModalOpen(false)}>
             <div
@@ -1738,6 +2147,34 @@ function App() {
               <div
                 key={`mini-${node.id}`}
                 className="mini-edge"
+                style={{
+                  left: x1,
+                  top: y1,
+                  width: length,
+                  transform: `rotate(${angle}rad)`,
+                }}
+              />
+            );
+          })}
+
+          {visibleFreeEdges.map((edge) => {
+            const fromNode = map.nodes[edge.fromId];
+            const toNode = map.nodes[edge.toId];
+            if (!fromNode || !toNode) return null;
+
+            const fromCenter = getNodeCenter(fromNode, map.rootId);
+            const toCenter = getNodeCenter(toNode, map.rootId);
+            const x1 = (fromCenter.x - bounds.minX) * miniScale + 8;
+            const y1 = (fromCenter.y - bounds.minY) * miniScale + 8;
+            const x2 = (toCenter.x - bounds.minX) * miniScale + 8;
+            const y2 = (toCenter.y - bounds.minY) * miniScale + 8;
+            const length = Math.hypot(x2 - x1, y2 - y1);
+            const angle = Math.atan2(y2 - y1, x2 - x1);
+
+            return (
+              <div
+                key={`free-${edge.id}`}
+                className="mini-edge mini-edge-free"
                 style={{
                   left: x1,
                   top: y1,

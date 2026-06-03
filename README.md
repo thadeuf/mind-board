@@ -6,6 +6,7 @@ Editor de mapa mental visual feito em `React + Vite`, com foco em um fluxo limpo
 
 - Canvas interativo com criação e edição rápida de nós
 - Edição inline de título e nota diretamente nos cards
+- Conexões livres entre nós com linha tracejada
 - Imagens por upload local ou URL
 - Links por nó
 - Importação de `Markdown` e `JSON`
@@ -36,7 +37,6 @@ Arquivos sugeridos:
 - `Vite`
 - `lucide-react`
 - `jsPDF`
-- `html-to-image`
 
 ## Requisitos
 
@@ -86,6 +86,8 @@ npm run preview
 - editar nota diretamente no card
 - alterar cor dos nós
 - alterar a cor completa do card principal
+- conectar nós fora da mesma hierarquia com linha tracejada
+- editar cor, rótulo e remoção de conexões livres
 
 ### Navegação
 
@@ -102,6 +104,7 @@ npm run preview
 - adicionar e remover imagem
 - adicionar e remover link
 - duplicar e excluir
+- iniciar conexões livres entre nós
 - clique direito com ações rápidas
 - ícones refinados com `lucide-react`
 
@@ -139,7 +142,7 @@ Na exportação visual, o sistema:
 - recorta automaticamente a área útil do mapa
 - exporta com fundo branco limpo
 - remove barra superior, grid, minimapa e overlays temporários
-- renderiza cards, linhas, notas, imagens e links em uma prancha própria
+- renderiza cards, linhas, notas, imagens, links e conexões livres em uma prancha própria
 
 ## Fluxos principais
 
@@ -156,6 +159,13 @@ Na exportação visual, o sistema:
 2. Edite o título no próprio card
 3. Escreva a nota abaixo
 4. Use a barra contextual para imagem, link, cor e duplicação
+
+### Criar uma conexão livre
+
+1. Selecione um nó
+2. Clique no ícone de conexão na toolbar contextual
+3. Clique em outro nó
+4. Clique na linha tracejada para editar cor, rótulo ou excluir
 
 ### Importar um resumo em Markdown
 
@@ -193,7 +203,7 @@ Arquivos principais:
 
 ## Persistência
 
-O estado atual do mapa fica salvo em `localStorage` com a chave `mind-board-react`.
+O estado atual do mapa, incluindo conexões livres, fica salvo em `localStorage` com a chave `mind-board-react`.
 
 ## Scripts disponíveis
 
