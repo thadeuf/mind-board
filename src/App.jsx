@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Focus,
   Palette,
+  Tags,
   Image as ImageIcon,
   ImageOff,
   Link as LinkIcon,
@@ -218,7 +219,59 @@ const FREE_EDGE_ANCHOR_OPTIONS = [
   { id: "right", label: "Direita" },
 ];
 const FREE_EDGE_THICKNESS_OPTIONS = [2, 3, 4, 5];
+const LAYOUT_MODE_OPTIONS = [
+  { id: "tree", label: "Arvore horizontal" },
+  { id: "radial", label: "Radial" },
+  { id: "org", label: "Organograma" },
+  { id: "compact", label: "Compactado" },
+];
+const NODE_STATUS_OPTIONS = [
+  { id: "", label: "Sem status", color: "#cbd5e1", text: "#475569" },
+  { id: "todo", label: "A fazer", color: "#dbeafe", text: "#2563eb" },
+  { id: "doing", label: "Em andamento", color: "#fef3c7", text: "#b45309" },
+  { id: "done", label: "Concluido", color: "#dcfce7", text: "#15803d" },
+  { id: "blocked", label: "Bloqueado", color: "#fee2e2", text: "#b91c1c" },
+];
+const NODE_PRIORITY_OPTIONS = [
+  { id: "", label: "Sem prioridade", color: "#e2e8f0", text: "#475569" },
+  { id: "low", label: "Baixa", color: "#ecfccb", text: "#4d7c0f" },
+  { id: "medium", label: "Media", color: "#fef3c7", text: "#b45309" },
+  { id: "high", label: "Alta", color: "#fee2e2", text: "#b91c1c" },
+];
+const NODE_ICON_OPTIONS = ["", "💡", "📌", "⚡", "✅", "🧠", "📚", "🚀", "🎯", "🗂"];
 const HISTORY_LIMIT = 100;
+
+function createNodeMeta(patch = {}) {
+  const normalizedTags = Array.isArray(patch.tags)
+    ? patch.tags.filter(Boolean)
+    : typeof patch.tags === "string"
+      ? patch.tags
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+
+  return {
+    icon: "",
+    status: "",
+    priority: "",
+    badge: "",
+    ...patch,
+    tags: normalizedTags,
+  };
+}
+
+function normalizeNodes(nodes) {
+  return Object.fromEntries(
+    Object.entries(nodes || {}).map(([id, node]) => [
+      id,
+      {
+        ...node,
+        ...createNodeMeta(node),
+      },
+    ])
+  );
+}
 
 function normalizeFreeEdges(freeEdges) {
   if (!Array.isArray(freeEdges)) return [];
@@ -250,6 +303,7 @@ function createInitialMap() {
   return {
     title: "Novo mapa mental",
     rootId,
+    layoutMode: "tree",
     freeEdges: [],
     nodes: {
       [rootId]: {
@@ -262,6 +316,7 @@ function createInitialMap() {
         x: 0,
         y: 0,
         collapsed: false,
+        ...createNodeMeta(),
       },
     },
   };
@@ -300,10 +355,17 @@ function createTemplateMap(templateId) {
   return applyTemplateColors(nextMap, template.accent);
 }
 
-function layoutMap(current) {
+function layoutHorizontalTree(current, options = {}) {
   const nodes = structuredClone(current.nodes);
   const spanCache = new Map();
   const leafSpan = 96;
+  const horizontalGapRoot = options.horizontalGapRoot ?? 320;
+  const horizontalGapBranch = options.horizontalGapBranch ?? 250;
+  const horizontalGapFloor = options.horizontalGapFloor ?? 180;
+  const rootVerticalGap = options.rootVerticalGap ?? 48;
+  const branchVerticalGap = options.branchVerticalGap ?? 40;
+  const branchVerticalGapFloor = options.branchVerticalGapFloor ?? 26;
+  const branchGapDecay = options.branchGapDecay ?? 14;
 
   const getSubtreeSpan = (nodeId, depth = 0) => {
     const cacheKey = `${nodeId}:${depth}`;
@@ -319,7 +381,7 @@ function layoutMap(current) {
       return span;
     }
 
-    const verticalGap = Math.max(40 - depth * 2, 26);
+    const verticalGap = Math.max(branchVerticalGap - depth * 2, branchVerticalGapFloor);
     const childrenSpan =
       node.children.reduce((total, childId) => total + getSubtreeSpan(childId, depth + 1), 0) +
       verticalGap * Math.max(node.children.length - 1, 0);
@@ -332,8 +394,9 @@ function layoutMap(current) {
     const parent = nodes[parentId];
     if (!parent || parent.children.length === 0) return;
 
-    const horizontalGap = depth === 0 ? 320 : Math.max(250 - depth * 14, 180);
-    const verticalGap = Math.max(40 - depth * 2, 26);
+    const horizontalGap =
+      depth === 0 ? horizontalGapRoot : Math.max(horizontalGapBranch - depth * branchGapDecay, horizontalGapFloor);
+    const verticalGap = Math.max(branchVerticalGap - depth * 2, branchVerticalGapFloor);
     const spans = parent.children.map((childId) => getSubtreeSpan(childId, depth + 1));
     const totalSpan = spans.reduce((sum, span) => sum + span, 0) + verticalGap * Math.max(spans.length - 1, 0);
     let cursorY = parent.y + getNodeHeight(parent, current.rootId) / 2 - totalSpan / 2;
@@ -383,7 +446,7 @@ function layoutMap(current) {
 
   const placeRootSide = (childIds, direction) => {
     if (childIds.length === 0) return;
-    const verticalGap = 48;
+    const verticalGap = rootVerticalGap;
     const totalSpan =
       childIds.reduce((sum, childId) => sum + getSubtreeSpan(childId, 1), 0) +
       verticalGap * Math.max(childIds.length - 1, 0);
@@ -397,7 +460,7 @@ function layoutMap(current) {
       const childHeight = getNodeHeight(child, current.rootId);
       const childCenterY = cursorY + childSpan / 2;
 
-      child.x = root.x + direction * 320;
+      child.x = root.x + direction * horizontalGapRoot;
       child.y = childCenterY - childHeight / 2;
       layoutBranch(childId, direction, 1);
       cursorY += childSpan + verticalGap;
@@ -413,6 +476,147 @@ function layoutMap(current) {
   };
 }
 
+function layoutTopDownOrg(current) {
+  const nodes = structuredClone(current.nodes);
+  const spanCache = new Map();
+  const leafWidth = 220;
+
+  const getSubtreeWidth = (nodeId, depth = 0) => {
+    const cacheKey = `${nodeId}:${depth}`;
+    if (spanCache.has(cacheKey)) return spanCache.get(cacheKey);
+    const node = nodes[nodeId];
+    if (!node) return leafWidth;
+
+    const width = getNodeWidth(node, current.rootId) + 24;
+    if (node.children.length === 0) {
+      const result = Math.max(width, leafWidth - Math.min(depth * 8, 48));
+      spanCache.set(cacheKey, result);
+      return result;
+    }
+
+    const gap = Math.max(56 - depth * 4, 22);
+    const childrenWidth =
+      node.children.reduce((sum, childId) => sum + getSubtreeWidth(childId, depth + 1), 0) +
+      gap * Math.max(node.children.length - 1, 0);
+    const result = Math.max(width, childrenWidth);
+    spanCache.set(cacheKey, result);
+    return result;
+  };
+
+  const layoutChildren = (parentId, depth = 0) => {
+    const parent = nodes[parentId];
+    if (!parent || parent.children.length === 0) return;
+
+    const gap = Math.max(56 - depth * 4, 22);
+    const totalWidth =
+      parent.children.reduce((sum, childId) => sum + getSubtreeWidth(childId, depth + 1), 0) +
+      gap * Math.max(parent.children.length - 1, 0);
+    let cursorX = parent.x + getNodeWidth(parent, current.rootId) / 2 - totalWidth / 2;
+    const nextY = parent.y + Math.max(138 - depth * 8, 96);
+
+    parent.children.forEach((childId) => {
+      const child = nodes[childId];
+      if (!child) return;
+      const childWidth = getNodeWidth(child, current.rootId);
+      const subtreeWidth = getSubtreeWidth(childId, depth + 1);
+      child.x = cursorX + subtreeWidth / 2 - childWidth / 2;
+      child.y = nextY;
+      layoutChildren(childId, depth + 1);
+      cursorX += subtreeWidth + gap;
+    });
+  };
+
+  nodes[current.rootId].x = 0;
+  nodes[current.rootId].y = 0;
+  layoutChildren(current.rootId, 0);
+
+  return {
+    ...current,
+    nodes,
+  };
+}
+
+function layoutRadial(current) {
+  const nodes = structuredClone(current.nodes);
+  const root = nodes[current.rootId];
+  root.x = 0;
+  root.y = 0;
+
+  const countLeaves = (nodeId) => {
+    const node = nodes[nodeId];
+    if (!node) return 1;
+    if (node.children.length === 0) return 1;
+    return node.children.reduce((sum, childId) => sum + countLeaves(childId), 0);
+  };
+
+  const layoutBranch = (nodeId, radius, startAngle, endAngle, depth = 1) => {
+    const node = nodes[nodeId];
+    if (!node || node.children.length === 0) return;
+
+    const totalLeaves = node.children.reduce((sum, childId) => sum + countLeaves(childId), 0) || 1;
+    let cursor = startAngle;
+    const nextRadius = radius + Math.max(176 - depth * 14, 112);
+
+    node.children.forEach((childId) => {
+      const child = nodes[childId];
+      if (!child) return;
+      const leaves = countLeaves(childId);
+      const sweep = (endAngle - startAngle) * (leaves / totalLeaves);
+      const childStart = cursor;
+      const childEnd = cursor + sweep;
+      const angle = childStart + sweep / 2;
+      const childWidth = getNodeWidth(child, current.rootId);
+      const childHeight = getNodeHeight(child, current.rootId);
+      child.x = Math.cos(angle) * nextRadius - childWidth / 2;
+      child.y = Math.sin(angle) * nextRadius - childHeight / 2;
+      layoutBranch(childId, nextRadius, childStart, childEnd, depth + 1);
+      cursor += sweep;
+    });
+  };
+
+  layoutBranch(current.rootId, 0, -Math.PI, Math.PI, 1);
+  return {
+    ...current,
+    nodes,
+  };
+}
+
+function layoutMap(current, mode = current.layoutMode || "tree") {
+  if (mode === "compact") {
+    return {
+      ...layoutHorizontalTree(current, {
+        horizontalGapRoot: 248,
+        horizontalGapBranch: 206,
+        horizontalGapFloor: 152,
+        rootVerticalGap: 28,
+        branchVerticalGap: 24,
+        branchVerticalGapFloor: 14,
+        branchGapDecay: 10,
+      }),
+      layoutMode: mode,
+    };
+  }
+
+  if (mode === "org") {
+    return {
+      ...layoutTopDownOrg(current),
+      layoutMode: mode,
+    };
+  }
+
+  if (mode === "radial") {
+    return {
+      ...layoutRadial(current),
+      layoutMode: mode,
+    };
+  }
+
+  return {
+    ...layoutHorizontalTree(current),
+    layoutMode: mode,
+  };
+}
+
 function loadMap() {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return createInitialMap();
@@ -422,7 +626,9 @@ function loadMap() {
     if (!parsed?.rootId || !parsed?.nodes) return createInitialMap();
     return {
       ...parsed,
+      layoutMode: parsed.layoutMode || "tree",
       freeEdges: normalizeFreeEdges(parsed.freeEdges),
+      nodes: normalizeNodes(parsed.nodes),
     };
   } catch {
     return createInitialMap();
@@ -439,6 +645,7 @@ function parseMarkdownToMap(markdown) {
   const map = {
     title: "Mapa importado",
     rootId,
+    layoutMode: "tree",
     freeEdges: [],
     nodes: {
       [rootId]: {
@@ -451,6 +658,7 @@ function parseMarkdownToMap(markdown) {
         x: 0,
         y: 0,
         collapsed: false,
+        ...createNodeMeta(),
       },
     },
   };
@@ -477,6 +685,7 @@ function parseMarkdownToMap(markdown) {
       x: baseX,
       y: baseY,
       collapsed: false,
+      ...createNodeMeta(),
     };
     parent.children.push(id);
     lastNodeId = id;
@@ -591,9 +800,18 @@ function getNodeWidth(node, rootId) {
 function getNodeHeight(node, rootId) {
   let height = node.id === rootId ? 96 : 60;
   if (node.note) height += 26;
+  if (node.status || node.priority || node.badge || (node.tags || []).length) height += 34;
   if (node.imageUrl) height += 150;
   if (node.linkUrl) height += 32;
   return height;
+}
+
+function getStatusMeta(statusId) {
+  return NODE_STATUS_OPTIONS.find((item) => item.id === statusId) || NODE_STATUS_OPTIONS[0];
+}
+
+function getPriorityMeta(priorityId) {
+  return NODE_PRIORITY_OPTIONS.find((item) => item.id === priorityId) || NODE_PRIORITY_OPTIONS[0];
 }
 
 function getEdgeAnchors(parent, child, rootId) {
@@ -946,6 +1164,7 @@ function App() {
   const [markdownDraft, setMarkdownDraft] = useState("");
   const [isMarkdownModalOpen, setIsMarkdownModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isLayoutModalOpen, setIsLayoutModalOpen] = useState(false);
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [activeContextPanel, setActiveContextPanel] = useState(null);
   const [assetModal, setAssetModal] = useState(EMPTY_ASSET_MODAL);
@@ -953,6 +1172,8 @@ function App() {
   const [selectedFreeEdgeId, setSelectedFreeEdgeId] = useState(null);
   const [freeEdgeLabelDraft, setFreeEdgeLabelDraft] = useState("");
   const [isFreeEdgeLabelModalOpen, setIsFreeEdgeLabelModalOpen] = useState(false);
+  const [isNodeMetaModalOpen, setIsNodeMetaModalOpen] = useState(false);
+  const [nodeMetaDraft, setNodeMetaDraft] = useState(() => createNodeMeta());
   const frameRef = useRef(null);
   const dragRef = useRef(null);
   const panRef = useRef(null);
@@ -1039,10 +1260,12 @@ function App() {
         setContextMenu(null);
         setActiveContextPanel(null);
         setAssetModal(EMPTY_ASSET_MODAL);
+        setIsLayoutModalOpen(false);
         setIsTemplateModalOpen(false);
         setPendingConnectionFromId(null);
         setSelectedFreeEdgeId(null);
         setIsFreeEdgeLabelModalOpen(false);
+        setIsNodeMetaModalOpen(false);
       }
     };
 
@@ -1389,6 +1612,24 @@ function App() {
     }, "Mapa atualizado", options);
   }
 
+  function applyLayoutMode(mode) {
+    const nextMap = layoutMap({ ...map, layoutMode: mode }, mode);
+    updateMap(() => nextMap, "Layout reorganizado");
+    setIsLayoutModalOpen(false);
+    requestAnimationFrame(() => centerMapFor(nextMap));
+  }
+
+  function openNodeMetaModal(node) {
+    setNodeMetaDraft(createNodeMeta(node));
+    setIsNodeMetaModalOpen(true);
+  }
+
+  function saveNodeMeta() {
+    if (!selectedNode) return;
+    setNodeFields(selectedNode.id, createNodeMeta(nodeMetaDraft));
+    setIsNodeMetaModalOpen(false);
+  }
+
   function startFreeConnection(nodeId) {
     setPendingConnectionFromId(nodeId);
     setSelectedFreeEdgeId(null);
@@ -1533,6 +1774,7 @@ function App() {
             x: nextX,
             y: nextY,
             collapsed: false,
+            ...createNodeMeta(),
           },
         },
       };
@@ -1844,7 +2086,9 @@ function App() {
         if (!parsed.rootId || !parsed.nodes) throw new Error();
         const normalizedMap = {
           ...parsed,
+          layoutMode: parsed.layoutMode || "tree",
           freeEdges: normalizeFreeEdges(parsed.freeEdges),
+          nodes: normalizeNodes(parsed.nodes),
         };
         updateMap(() => normalizedMap, "Mapa importado");
         selectOnly(normalizedMap.rootId);
@@ -2331,7 +2575,8 @@ function App() {
 
       ctx.fillStyle = textColor;
       ctx.font = "700 16px Manrope";
-      const titleLines = wrapCanvasText(ctx, node.title || "Novo tópico", contentWidth);
+      const titleText = node.icon ? `${node.icon} ${node.title || "Novo tópico"}` : node.title || "Novo tópico";
+      const titleLines = wrapCanvasText(ctx, titleText, contentWidth);
       titleLines.forEach((line, index) => {
         ctx.fillText(line, contentX, cursorY + index * 18);
       });
@@ -2346,6 +2591,30 @@ function App() {
           ctx.fillText(line, contentX, cursorY + index * 16);
         });
         cursorY += noteLines.length * 16;
+      }
+
+      const metaTokens = [
+        node.status ? getStatusMeta(node.status).label : "",
+        node.priority ? getPriorityMeta(node.priority).label : "",
+        node.badge || "",
+        ...(node.tags || []).slice(0, 2).map((tag) => `#${tag}`),
+      ].filter(Boolean);
+
+      if (metaTokens.length > 0) {
+        cursorY += 10;
+        let pillX = contentX;
+        ctx.font = "600 11px Manrope";
+        metaTokens.forEach((token) => {
+          const width = Math.min(contentWidth, ctx.measureText(token).width + 18);
+          if (pillX + width > contentX + contentWidth) return;
+          roundRectPath(ctx, pillX, cursorY - 12, width, 22, 11);
+          ctx.fillStyle = "#f1f5f9";
+          ctx.fill();
+          ctx.fillStyle = "#475569";
+          ctx.fillText(token, pillX + 9, cursorY + 3);
+          pillX += width + 6;
+        });
+        cursorY += 18;
       }
 
       const image = imageCache.get(node.id);
@@ -2496,9 +2765,10 @@ function App() {
       if (measureContext) {
         measureContext.font = "700 16px Manrope";
       }
+      const titleText = node.icon ? `${node.icon} ${node.title || "Novo tópico"}` : node.title || "Novo tópico";
       const titleLines = measureContext
-        ? wrapCanvasText(measureContext, node.title || "Novo tópico", contentWidth)
-        : [node.title || "Novo tópico"];
+        ? wrapCanvasText(measureContext, titleText, contentWidth)
+        : [titleText];
       titleLines.forEach((line, index) => {
         svgParts.push(
           `<text x="${contentX}" y="${cursorY + index * 18}" font-family="Manrope, sans-serif" font-size="16" font-weight="700" fill="${escapeXml(
@@ -2522,6 +2792,38 @@ function App() {
           );
         });
         cursorY += noteLines.length * 16;
+      }
+
+      const metaTokens = [
+        node.status ? getStatusMeta(node.status).label : "",
+        node.priority ? getPriorityMeta(node.priority).label : "",
+        node.badge || "",
+        ...(node.tags || []).slice(0, 2).map((tag) => `#${tag}`),
+      ].filter(Boolean);
+
+      if (metaTokens.length > 0) {
+        cursorY += 10;
+        if (measureContext) {
+          measureContext.font = "600 11px Manrope";
+        }
+        let pillX = contentX;
+        metaTokens.forEach((token) => {
+          const width = Math.min(
+            contentWidth,
+            (measureContext?.measureText(token).width || token.length * 7) + 18
+          );
+          if (pillX + width > contentX + contentWidth) return;
+          svgParts.push(
+            `<rect x="${pillX}" y="${cursorY - 12}" width="${width}" height="22" rx="11" fill="#f1f5f9" />`
+          );
+          svgParts.push(
+            `<text x="${pillX + 9}" y="${cursorY + 3}" font-family="Manrope, sans-serif" font-size="11" font-weight="600" fill="#475569">${escapeXml(
+              token
+            )}</text>`
+          );
+          pillX += width + 6;
+        });
+        cursorY += 18;
       }
 
       const imageUrl = imageCache.get(node.id);
@@ -2610,7 +2912,7 @@ function App() {
             </button>
             <button onClick={() => setIsTemplateModalOpen(true)}>Novo</button>
             <button onClick={centerVisibleMap}>Centralizar</button>
-            <button onClick={autoLayout}>Auto layout</button>
+            <button onClick={() => setIsLayoutModalOpen(true)}>Layouts</button>
             <button onClick={() => setIsExportModalOpen(true)}>Exportar</button>
             <button onClick={() => fileInputRef.current?.click()}>Importar</button>
             <button onClick={() => markdownInputRef.current?.click()}>MD</button>
@@ -2716,6 +3018,7 @@ function App() {
             >
               <div className="node-head">
                 <div className="node-title-row">
+                  {node.icon ? <span className="node-icon">{node.icon}</span> : null}
                   {selectedId === node.id && selectedIds.length === 1 ? (
                     <input
                       className="node-title-input"
@@ -2762,6 +3065,38 @@ function App() {
                   {node.note ? <p>{node.note}</p> : null}
                 </>
               )}
+              {node.status || node.priority || node.badge || (node.tags || []).length ? (
+                <div className="node-meta-row">
+                  {node.status ? (
+                    <span
+                      className="node-pill"
+                      style={{
+                        "--pill-bg": getStatusMeta(node.status).color,
+                        "--pill-text": getStatusMeta(node.status).text,
+                      }}
+                    >
+                      {getStatusMeta(node.status).label}
+                    </span>
+                  ) : null}
+                  {node.priority ? (
+                    <span
+                      className="node-pill"
+                      style={{
+                        "--pill-bg": getPriorityMeta(node.priority).color,
+                        "--pill-text": getPriorityMeta(node.priority).text,
+                      }}
+                    >
+                      {getPriorityMeta(node.priority).label}
+                    </span>
+                  ) : null}
+                  {node.badge ? <span className="node-pill node-pill-neutral">{node.badge}</span> : null}
+                  {(node.tags || []).slice(0, 2).map((tag) => (
+                    <span key={`${node.id}-${tag}`} className="node-pill node-pill-tag">
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               {node.imageUrl ? <img className="node-image" src={node.imageUrl} alt="" /> : null}
               {node.imageUrl ? (
                 <button
@@ -3006,6 +3341,9 @@ function App() {
                 }}
               >
                 <Workflow size={16} strokeWidth={2.2} />
+              </button>
+              <button title="Metadados" onClick={() => openNodeMetaModal(selectedNode)}>
+                <Tags size={16} strokeWidth={2.2} />
               </button>
               <button
                 title="Imagem"
@@ -3262,6 +3600,153 @@ function App() {
                 >
                   Gerar mapa
                 </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isLayoutModalOpen ? (
+          <div className="modal-backdrop" onPointerDown={() => setIsLayoutModalOpen(false)}>
+            <div
+              className="markdown-modal layout-modal"
+              onPointerDown={stopCanvasPropagation}
+              onClick={stopCanvasPropagation}
+            >
+              <div className="markdown-modal-head">
+                <div>
+                  <p className="label">Layouts</p>
+                  <h3>Escolha a organização do mapa</h3>
+                </div>
+                <button onClick={() => setIsLayoutModalOpen(false)}>×</button>
+              </div>
+
+              <div className="layout-grid">
+                {LAYOUT_MODE_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    className={`layout-card ${map.layoutMode === option.id ? "active" : ""}`}
+                    onClick={() => applyLayoutMode(option.id)}
+                  >
+                    <strong>{option.label}</strong>
+                    <span>
+                      {option.id === "tree"
+                        ? "Equilibrado para mapas mentais tradicionais."
+                        : option.id === "radial"
+                          ? "Expande em volta do centro com leitura mais exploratória."
+                          : option.id === "org"
+                            ? "Desce em níveis, ideal para organogramas e fluxos."
+                            : "Aproxima os ramos para ocupar menos espaço."}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="markdown-modal-actions">
+                <button onClick={() => setIsLayoutModalOpen(false)}>Fechar</button>
+                <button onClick={autoLayout}>Reaplicar atual</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isNodeMetaModalOpen && selectedNode ? (
+          <div className="modal-backdrop" onPointerDown={() => setIsNodeMetaModalOpen(false)}>
+            <div
+              className="markdown-modal meta-modal"
+              onPointerDown={stopCanvasPropagation}
+              onClick={stopCanvasPropagation}
+            >
+              <div className="markdown-modal-head">
+                <div>
+                  <p className="label">Metadados</p>
+                  <h3>Personalize sinais visuais do nó</h3>
+                </div>
+                <button onClick={() => setIsNodeMetaModalOpen(false)}>×</button>
+              </div>
+
+              <div className="popover-group">
+                <p className="popover-label">Icone</p>
+                <div className="chip-row">
+                  {NODE_ICON_OPTIONS.map((icon) => (
+                    <button
+                      key={`icon-${icon || "none"}`}
+                      className={`option-chip ${nodeMetaDraft.icon === icon ? "active" : ""}`}
+                      onClick={() => setNodeMetaDraft((current) => ({ ...current, icon }))}
+                    >
+                      {icon || "Sem icone"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="popover-group">
+                <p className="popover-label">Status</p>
+                <div className="chip-row">
+                  {NODE_STATUS_OPTIONS.map((option) => (
+                    <button
+                      key={`status-${option.id || "none"}`}
+                      className={`option-chip ${nodeMetaDraft.status === option.id ? "active" : ""}`}
+                      onClick={() => setNodeMetaDraft((current) => ({ ...current, status: option.id }))}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="popover-group">
+                <p className="popover-label">Prioridade</p>
+                <div className="chip-row">
+                  {NODE_PRIORITY_OPTIONS.map((option) => (
+                    <button
+                      key={`priority-${option.id || "none"}`}
+                      className={`option-chip ${nodeMetaDraft.priority === option.id ? "active" : ""}`}
+                      onClick={() => setNodeMetaDraft((current) => ({ ...current, priority: option.id }))}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="asset-field">
+                <span>Badge curto</span>
+                <input
+                  value={nodeMetaDraft.badge}
+                  onChange={(event) =>
+                    setNodeMetaDraft((current) => ({ ...current, badge: event.target.value }))
+                  }
+                  placeholder="Ex.: Revisar, Sprint 2, Importante"
+                />
+              </label>
+
+              <label className="asset-field">
+                <span>Etiquetas</span>
+                <input
+                  value={(nodeMetaDraft.tags || []).join(", ")}
+                  onChange={(event) =>
+                    setNodeMetaDraft((current) => ({
+                      ...current,
+                      tags: event.target.value
+                        .split(",")
+                        .map((item) => item.trim())
+                        .filter(Boolean),
+                    }))
+                  }
+                  placeholder="produto, aula, urgente"
+                />
+              </label>
+
+              <div className="markdown-modal-actions">
+                <button
+                  onClick={() => {
+                    setNodeMetaDraft(createNodeMeta());
+                  }}
+                >
+                  Limpar
+                </button>
+                <button onClick={() => setIsNodeMetaModalOpen(false)}>Cancelar</button>
+                <button onClick={saveNodeMeta}>Salvar</button>
               </div>
             </div>
           </div>

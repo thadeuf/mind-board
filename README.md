@@ -7,11 +7,13 @@ Editor de mapa mental visual feito em `React + Vite`, com foco em um fluxo limpo
 - Canvas interativo com criação e edição rápida de nós
 - Edição inline de título e nota diretamente nos cards
 - Conexões livres entre nós com estilos, seta e dobra arrastável
+- Modos diferentes de layout do mapa
+- Metadados visuais nos nós
 - Imagens por upload local ou URL
 - Links por nó
 - Templates prontos para começar mais rápido
 - Importação de `Markdown` e `JSON`
-- Exportação em `JSON`, `PDF` e `PNG`
+- Exportação em `JSON`, `SVG`, `PDF` e `PNG`
 - Recorte automático da área útil na exportação
 - Persistência automática no navegador
 
@@ -82,16 +84,20 @@ npm run preview
 - criar tópico irmão
 - duplicar tópico
 - remover tópico
+- selecionar múltiplos nós
 - recolher e expandir ramos
 - arrastar nós no canvas
 - editar título diretamente no card
 - editar nota diretamente no card
 - alterar cor dos nós
+- alterar cor em lote em múltiplos nós
+- duplicar e excluir em lote
 - alterar a cor completa do card principal
 - conectar nós fora da mesma hierarquia com linhas livres
 - editar cor, rótulo, estilo, espessura e seta das conexões livres
 - escolher âncoras por lado (`topo`, `baixo`, `esquerda`, `direita` ou `auto`)
 - arrastar o ponto de dobra da conexão livre para criar trajetos ortogonais
+- adicionar ícone, status, prioridade, badge e etiquetas nos nós
 
 ### Navegação
 
@@ -99,12 +105,15 @@ npm run preview
 - pan do canvas com `Espaço`
 - botão `Centralizar`
 - auto layout
+- modos de layout:
+  `árvore horizontal`, `radial`, `organograma`, `compactado`
 - minimapa
 
 ### Barra contextual e menu de contexto
 
 - foco no nó selecionado
 - paleta visual de cores
+- modal de metadados visuais do nó
 - adicionar e remover imagem
 - adicionar e remover link
 - duplicar e excluir
@@ -141,6 +150,7 @@ Depois da conversão, o mapa também passa por layout automático e já entra ce
 ### Exportação
 
 - `JSON`
+- `SVG`
 - `PDF`
 - `Imagem`
 
@@ -169,6 +179,19 @@ Os templates já abrem com estrutura inicial, layout organizado e enquadramento 
 2. Edite o título no próprio card
 3. Escreva a nota abaixo
 4. Use a barra contextual para imagem, link, cor e duplicação
+
+### Enriquecer visualmente um nó
+
+1. Selecione um nó
+2. Clique no ícone de metadados na toolbar contextual
+3. Escolha ícone, status e prioridade
+4. Adicione um badge curto ou etiquetas
+
+### Reorganizar o mapa
+
+1. Clique em `Layouts`
+2. Escolha entre `Árvore horizontal`, `Radial`, `Organograma` ou `Compactado`
+3. O mapa é reorganizado e recentralizado automaticamente
 
 ### Criar uma conexão livre
 
@@ -235,6 +258,7 @@ npm run preview
 - o renderer manual de exportação ainda pode divergir sutilmente do canvas em casos mais ricos
 - conexões livres ainda usam uma única dobra manual por linha
 - templates ainda são uma primeira galeria curada, não uma biblioteca extensa
+- seleção múltipla ainda funciona por clique com modificador, sem caixa de seleção no canvas
 
 ## Troubleshooting
 
@@ -254,6 +278,7 @@ O sistema já faz recorte automático por área útil e ainda aplica um corte fi
 - refinar a barra contextual
 - melhorar os modais de mídia e link
 - permitir múltiplas dobras por conexão livre
+- adicionar caixa de seleção por arrasto
 
 ### Médio prazo
 
@@ -278,5 +303,6 @@ O sistema já faz recorte automático por área útil e ainda aplica um corte fi
 - suportar múltiplos pontos de dobra nas conexões livres
 - permitir trocar imagem existente sem reabrir o fluxo completo
 - adicionar opção de ocultar minimapa
+- expandir os metadados visuais para filtros e busca
 - melhorar a experiência mobile
 - refinar microinterações e estados visuais
