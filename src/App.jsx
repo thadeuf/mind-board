@@ -911,6 +911,21 @@ function trimCanvasWhitespace(sourceCanvas, padding = 24) {
   return trimmedCanvas;
 }
 
+function getMeasureContext() {
+  if (typeof document === "undefined") return null;
+  const canvas = document.createElement("canvas");
+  return canvas.getContext("2d");
+}
+
+function escapeXml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 function App() {
   const [history, setHistory] = useState(() => {
     const initialMap = loadMap();
@@ -923,6 +938,7 @@ function App() {
   });
   const map = history.present;
   const [selectedId, setSelectedId] = useState(() => loadMap().rootId);
+  const [selectedIds, setSelectedIds] = useState(() => [loadMap().rootId]);
   const [viewport, setViewport] = useState({ x: 0, y: 0, scale: 1 });
   const [status, setStatus] = useState("Pronto");
   const [isSpacePressed, setIsSpacePressed] = useState(false);
@@ -944,6 +960,7 @@ function App() {
   const fileInputRef = useRef(null);
   const markdownInputRef = useRef(null);
   const assetFileInputRef = useRef(null);
+  const measureContextRef = useRef(getMeasureContext());
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
@@ -954,6 +971,14 @@ function App() {
       setSelectedId(map.rootId);
     }
   }, [map, selectedId]);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const filtered = current.filter((id) => map.nodes[id]);
+      if (filtered.length > 0) return filtered;
+      return map.rootId ? [map.rootId] : [];
+    });
+  }, [map]);
 
   useEffect(() => {
     if (selectedFreeEdgeId && !(map.freeEdges || []).some((edge) => edge.id === selectedFreeEdgeId)) {
@@ -994,14 +1019,14 @@ function App() {
       if (isEditing) return;
       if (!selectedId) return;
 
-      if (event.key === "Tab") {
+      if (event.key === "Tab" && selectedIds.length === 1) {
         event.preventDefault();
         addChild(selectedId);
       }
 
       if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
-        removeNode(selectedId);
+        removeNodes(selectedIds);
       }
     };
 
@@ -1034,7 +1059,7 @@ function App() {
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("pointerdown", onWindowPointerDown);
     };
-  }, [selectedId, map]);
+  }, [selectedId, selectedIds, map]);
 
   const visibleNodes = useMemo(() => {
     const output = [];
@@ -1052,6 +1077,7 @@ function App() {
   }, [map]);
 
   const selectedNode = selectedId ? map.nodes[selectedId] : null;
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
   const visibleFreeEdges = useMemo(
     () =>
@@ -1076,13 +1102,13 @@ function App() {
       handleTop: geometry.handleY * viewport.scale + viewport.y,
     };
   }, [selectedFreeEdge, map.nodes, map.rootId, viewport]);
-  const selectedNodeMetrics = selectedNode
+  const selectedNodeMetrics = selectedNode && selectedIds.length === 1
     ? {
         width: getNodeWidth(selectedNode, map.rootId),
         height: getNodeHeight(selectedNode, map.rootId),
       }
     : null;
-  const selectedNodeOverlay = selectedNode && selectedNodeMetrics
+  const selectedNodeOverlay = selectedNode && selectedNodeMetrics && selectedIds.length === 1
     ? {
         left: selectedNode.x * viewport.scale + viewport.x,
         top: selectedNode.y * viewport.scale + viewport.y,
@@ -1090,6 +1116,32 @@ function App() {
         height: selectedNodeMetrics.height * viewport.scale,
       }
     : null;
+  const multiSelectedNodes = useMemo(
+    () => visibleNodes.filter((node) => selectedIdSet.has(node.id)),
+    [visibleNodes, selectedIdSet]
+  );
+  const multiSelectionOverlay = useMemo(() => {
+    if (multiSelectedNodes.length <= 1) return null;
+    const bounds = multiSelectedNodes.reduce(
+      (acc, node) => {
+        const nodeBounds = getNodeBounds(node, map.rootId);
+        return {
+          minX: Math.min(acc.minX, nodeBounds.minX),
+          minY: Math.min(acc.minY, nodeBounds.minY),
+          maxX: Math.max(acc.maxX, nodeBounds.maxX),
+          maxY: Math.max(acc.maxY, nodeBounds.maxY),
+        };
+      },
+      { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+    );
+
+    return {
+      left: bounds.minX * viewport.scale + viewport.x,
+      top: bounds.minY * viewport.scale + viewport.y,
+      width: (bounds.maxX - bounds.minX) * viewport.scale,
+      height: (bounds.maxY - bounds.minY) * viewport.scale,
+    };
+  }, [multiSelectedNodes, map.rootId, viewport]);
 
   const transformStyle = {
     transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
@@ -1098,8 +1150,139 @@ function App() {
   const canUndo = history.past.length > 0;
   const canRedo = history.future.length > 0;
 
+  function getFloatingPosition(anchorX, anchorY, width, height, options = {}) {
+    const frame = frameRef.current;
+    const margin = options.margin ?? 16;
+    const preferredTop = anchorY + (options.offsetY ?? 0);
+    const preferredLeft = anchorX + (options.offsetX ?? 0);
+    const rect = frame?.getBoundingClientRect();
+
+    if (!rect) {
+      return {
+        left: preferredLeft,
+        top: preferredTop,
+      };
+    }
+
+    const left = Math.min(
+      Math.max(preferredLeft, margin + width / 2),
+      rect.width - margin - width / 2
+    );
+
+    let top = preferredTop;
+    if (options.preferAbove && top + height > rect.height - margin) {
+      top = anchorY - (options.aboveOffset ?? height + 12);
+    }
+    top = Math.min(Math.max(top, margin), rect.height - margin - height);
+
+    return { left, top };
+  }
+
+  const freeEdgeToolbarPosition = useMemo(() => {
+    if (!selectedFreeEdgeOverlay) return null;
+    return getFloatingPosition(selectedFreeEdgeOverlay.left, selectedFreeEdgeOverlay.top, 200, 46, {
+      offsetY: -48,
+      preferAbove: true,
+      aboveOffset: 48,
+    });
+  }, [selectedFreeEdgeOverlay, viewport, selectedFreeEdgeId]);
+
+  const freeEdgeColorPopoverPosition = useMemo(() => {
+    if (!selectedFreeEdgeOverlay) return null;
+    return getFloatingPosition(selectedFreeEdgeOverlay.left, selectedFreeEdgeOverlay.top, 196, 84, {
+      offsetY: 2,
+      preferAbove: true,
+      aboveOffset: 96,
+    });
+  }, [selectedFreeEdgeOverlay, viewport, selectedFreeEdgeId]);
+
+  const freeEdgeStylePopoverPosition = useMemo(() => {
+    if (!selectedFreeEdgeOverlay) return null;
+    return getFloatingPosition(selectedFreeEdgeOverlay.left, selectedFreeEdgeOverlay.top, 292, 360, {
+      offsetY: 2,
+      preferAbove: true,
+      aboveOffset: 372,
+    });
+  }, [selectedFreeEdgeOverlay, viewport, selectedFreeEdgeId]);
+
+  const nodeColorPopoverPosition = useMemo(() => {
+    if (!selectedNodeOverlay) return null;
+    return getFloatingPosition(
+      selectedNodeOverlay.left + selectedNodeOverlay.width / 2,
+      selectedNodeOverlay.top,
+      196,
+      84,
+      {
+        offsetY: -6,
+        preferAbove: true,
+        aboveOffset: 96,
+      }
+    );
+  }, [selectedNodeOverlay, viewport, selectedId]);
+  const multiSelectionToolbarPosition = useMemo(() => {
+    if (!multiSelectionOverlay) return null;
+    return getFloatingPosition(
+      multiSelectionOverlay.left + multiSelectionOverlay.width / 2,
+      multiSelectionOverlay.top,
+      220,
+      46,
+      {
+        offsetY: -56,
+        preferAbove: true,
+        aboveOffset: 56,
+      }
+    );
+  }, [multiSelectionOverlay, viewport, selectedIds]);
+  const multiSelectionColorPopoverPosition = useMemo(() => {
+    if (!multiSelectionOverlay) return null;
+    return getFloatingPosition(
+      multiSelectionOverlay.left + multiSelectionOverlay.width / 2,
+      multiSelectionOverlay.top,
+      196,
+      84,
+      {
+        offsetY: -6,
+        preferAbove: true,
+        aboveOffset: 96,
+      }
+    );
+  }, [multiSelectionOverlay, viewport, selectedIds]);
+
   function clearHistoryGroup() {
     setHistory((current) => (current.group ? { ...current, group: null } : current));
+  }
+
+  function selectOnly(nodeId) {
+    setSelectedId(nodeId);
+    setSelectedIds(nodeId ? [nodeId] : []);
+  }
+
+  function isModifierSelection(event) {
+    return event.shiftKey || event.metaKey || event.ctrlKey;
+  }
+
+  function getTopLevelSelection(ids, nodes) {
+    const set = new Set(ids);
+    return ids.filter((id) => {
+      let cursor = nodes[id]?.parentId;
+      while (cursor) {
+        if (set.has(cursor)) return false;
+        cursor = nodes[cursor]?.parentId;
+      }
+      return true;
+    });
+  }
+
+  function setNodesColor(ids, color) {
+    updateMap((current) => {
+      const nextNodes = { ...current.nodes };
+      ids.forEach((id) => {
+        const node = nextNodes[id];
+        if (!node) return;
+        nextNodes[id] = { ...node, color };
+      });
+      return { ...current, nodes: nextNodes };
+    }, "Nós atualizados");
   }
 
   function updateMap(updater, nextStatus, options = {}) {
@@ -1259,6 +1442,7 @@ function App() {
       setPendingConnectionFromId(null);
       setSelectedFreeEdgeId(nextEdge.id);
       setSelectedId(null);
+      setSelectedIds([]);
       setStatus("Conexão livre selecionada");
       return;
     }
@@ -1273,6 +1457,7 @@ function App() {
     setPendingConnectionFromId(null);
     setSelectedFreeEdgeId(nextEdge.id);
     setSelectedId(null);
+    setSelectedIds([]);
   }
 
   function openAssetModal(type, nodeId) {
@@ -1352,7 +1537,7 @@ function App() {
         },
       };
     }, "Novo tópico criado");
-    setSelectedId(childId);
+    selectOnly(childId);
   }
 
   function addSibling(nodeId) {
@@ -1361,13 +1546,14 @@ function App() {
     addChild(node.parentId);
   }
 
-  function removeNode(nodeId) {
-    if (nodeId === map.rootId) return;
+  function removeNodes(nodeIds) {
+    const topLevelIds = getTopLevelSelection(
+      nodeIds.filter((id) => id !== map.rootId),
+      map.nodes
+    );
+    if (topLevelIds.length === 0) return;
 
     updateMap((current) => {
-      const target = current.nodes[nodeId];
-      if (!target) return current;
-
       const toDelete = [];
       const visit = (id) => {
         const node = current.nodes[id];
@@ -1375,18 +1561,22 @@ function App() {
         toDelete.push(id);
         node.children.forEach(visit);
       };
-      visit(nodeId);
+      topLevelIds.forEach(visit);
 
       const nodes = { ...current.nodes };
       toDelete.forEach((id) => delete nodes[id]);
 
-      const parent = current.nodes[target.parentId];
-      if (parent) {
+      const touchedParents = new Set(
+        topLevelIds.map((id) => current.nodes[id]?.parentId).filter(Boolean)
+      );
+      touchedParents.forEach((parentId) => {
+        const parent = current.nodes[parentId];
+        if (!parent) return;
         nodes[parent.id] = {
           ...parent,
-          children: parent.children.filter((childId) => childId !== nodeId),
+          children: parent.children.filter((childId) => !topLevelIds.includes(childId)),
         };
-      }
+      });
 
       return {
         ...current,
@@ -1397,39 +1587,54 @@ function App() {
       };
     }, "Tópico removido");
 
-    setSelectedId(map.nodes[nodeId]?.parentId ?? map.rootId);
+    selectOnly(map.rootId);
   }
 
-  function duplicateNode(nodeId) {
-    const cloneId = makeId();
-
+  function duplicateNodes(nodeIds) {
+    const topLevelIds = getTopLevelSelection(nodeIds, map.nodes);
+    const createdIds = [];
     updateMap((current) => {
-      const node = current.nodes[nodeId];
-      if (!node) return current;
-      const parentId = node.parentId ?? current.rootId;
-      const parent = current.nodes[parentId];
+      const nextNodes = { ...current.nodes };
+
+      topLevelIds.forEach((nodeId, index) => {
+        const node = current.nodes[nodeId];
+        if (!node) return;
+        const cloneId = makeId();
+        const parentId = node.parentId ?? current.rootId;
+        const parent = nextNodes[parentId];
+        createdIds.push(cloneId);
+        nextNodes[parentId] = {
+          ...parent,
+          children: [...parent.children, cloneId],
+        };
+        nextNodes[cloneId] = {
+          ...node,
+          id: cloneId,
+          title: `${node.title} cópia`,
+          x: node.x + 36 + index * 10,
+          y: node.y + 36 + index * 10,
+          children: [],
+          parentId,
+        };
+      });
 
       return {
         ...current,
-        nodes: {
-          ...current.nodes,
-          [parentId]: {
-            ...parent,
-            children: [...parent.children, cloneId],
-          },
-          [cloneId]: {
-            ...node,
-            id: cloneId,
-            title: `${node.title} cópia`,
-            x: node.x + 36,
-            y: node.y + 36,
-            children: [],
-            parentId,
-          },
-        },
+        nodes: nextNodes,
       };
     }, "Tópico duplicado");
-    setSelectedId(cloneId);
+    if (createdIds.length > 0) {
+      setSelectedId(createdIds[createdIds.length - 1]);
+      setSelectedIds(createdIds);
+    }
+  }
+
+  function removeNode(nodeId) {
+    removeNodes([nodeId]);
+  }
+
+  function duplicateNode(nodeId) {
+    duplicateNodes([nodeId]);
   }
 
   function autoLayout() {
@@ -1454,6 +1659,36 @@ function App() {
 
   function centerVisibleMap() {
     centerMapFor(map);
+  }
+
+  function centerSelection(nodeIds) {
+    const frame = frameRef.current;
+    const nodes = nodeIds.map((id) => map.nodes[id]).filter(Boolean);
+    if (!frame || nodes.length === 0) return;
+
+    const rect = frame.getBoundingClientRect();
+    const bounds = nodes.reduce(
+      (acc, node) => {
+        const nodeBounds = getNodeBounds(node, map.rootId);
+        return {
+          minX: Math.min(acc.minX, nodeBounds.minX),
+          minY: Math.min(acc.minY, nodeBounds.minY),
+          maxX: Math.max(acc.maxX, nodeBounds.maxX),
+          maxY: Math.max(acc.maxY, nodeBounds.maxY),
+        };
+      },
+      { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+    );
+
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerY = (bounds.minY + bounds.maxY) / 2;
+    const topOffset = 44;
+
+    setViewport((current) => ({
+      ...current,
+      x: rect.width / 2 - centerX * current.scale,
+      y: (rect.height + topOffset) / 2 - centerY * current.scale,
+    }));
   }
 
   function centerMapFor(targetMap) {
@@ -1530,6 +1765,19 @@ function App() {
     setStatus("Mapa exportado");
   }
 
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function getExportFilename(extension) {
+    return `${(map.title || "mapa").toLowerCase().replace(/\s+/g, "-")}.${extension}`;
+  }
+
   async function exportAsImage() {
     if (!frameRef.current) return;
     try {
@@ -1538,7 +1786,7 @@ function App() {
       const dataUrl = canvas.toDataURL("image/png");
       const a = document.createElement("a");
       a.href = dataUrl;
-      a.download = `${(map.title || "mapa").toLowerCase().replace(/\s+/g, "-")}.png`;
+      a.download = getExportFilename("png");
       a.click();
       setStatus("Mapa exportado como imagem");
     } catch {
@@ -1567,10 +1815,21 @@ function App() {
         format: [image.width, image.height],
       });
       pdf.addImage(dataUrl, "PNG", 0, 0, image.width, image.height);
-      pdf.save(`${(map.title || "mapa").toLowerCase().replace(/\s+/g, "-")}.pdf`);
+      pdf.save(getExportFilename("pdf"));
       setStatus("Mapa exportado como PDF");
     } catch {
       setStatus("Falha ao exportar PDF");
+    }
+  }
+
+  async function exportAsSvg() {
+    try {
+      const svg = await createExportSvg();
+      if (!svg) return;
+      downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), getExportFilename("svg"));
+      setStatus("Mapa exportado como SVG");
+    } catch {
+      setStatus("Falha ao exportar SVG");
     }
   }
 
@@ -1588,7 +1847,7 @@ function App() {
           freeEdges: normalizeFreeEdges(parsed.freeEdges),
         };
         updateMap(() => normalizedMap, "Mapa importado");
-        setSelectedId(normalizedMap.rootId);
+        selectOnly(normalizedMap.rootId);
         requestAnimationFrame(() => centerOnNode(normalizedMap.rootId));
       } catch {
         setStatus("JSON inválido");
@@ -1601,7 +1860,7 @@ function App() {
   function importMarkdownText(markdownText) {
     const parsedMap = layoutMap(parseMarkdownToMap(markdownText));
     updateMap(() => parsedMap, "Markdown convertido em mapa");
-    setSelectedId(parsedMap.rootId);
+    selectOnly(parsedMap.rootId);
     requestAnimationFrame(() => centerMapFor(parsedMap));
   }
 
@@ -1638,6 +1897,7 @@ function App() {
     }
 
     setSelectedId(null);
+    setSelectedIds([]);
     setPendingConnectionFromId(null);
     setSelectedFreeEdgeId(null);
   }
@@ -1659,22 +1919,29 @@ function App() {
 
     if (dragRef.current) {
       const world = getWorldPoint(event);
-      const { id, offsetX, offsetY } = dragRef.current;
+      const { ids, originById, startWorld } = dragRef.current;
+      const deltaX = world.x - startWorld.x;
+      const deltaY = world.y - startWorld.y;
       updateMap((current) => {
-        const node = current.nodes[id];
-        if (!node) return current;
+        const nextNodes = { ...current.nodes };
+        let changed = false;
+        ids.forEach((id) => {
+          const node = current.nodes[id];
+          const origin = originById[id];
+          if (!node || !origin) return;
+          nextNodes[id] = {
+            ...node,
+            x: origin.x + deltaX,
+            y: origin.y + deltaY,
+          };
+          changed = true;
+        });
+        if (!changed) return current;
         return {
           ...current,
-          nodes: {
-            ...current.nodes,
-            [id]: {
-              ...node,
-              x: world.x - offsetX,
-              y: world.y - offsetY,
-            },
-          },
+          nodes: nextNodes,
         };
-      }, undefined, { group: `drag:${id}` });
+      }, undefined, { group: `drag:${ids.join(",")}` });
       return;
     }
 
@@ -1708,19 +1975,52 @@ function App() {
     }
 
     setSelectedFreeEdgeId(null);
-    setSelectedId(node.id);
+    const modifierSelection = isModifierSelection(event);
+    const alreadySelected = selectedIdSet.has(node.id);
+
+    if (modifierSelection) {
+      setSelectedIds((current) => {
+        const exists = current.includes(node.id);
+        const next = exists ? current.filter((id) => id !== node.id) : [...current, node.id];
+        const fallbackId = next[next.length - 1] ?? null;
+        setSelectedId(exists ? fallbackId : node.id);
+        return next;
+      });
+      if (!alreadySelected) {
+        return;
+      }
+    } else if (!alreadySelected || selectedIds.length <= 1) {
+      selectOnly(node.id);
+    } else {
+      setSelectedId(node.id);
+    }
 
     const world = getWorldPoint(event);
+    const dragIds = modifierSelection
+      ? selectedIdSet.has(node.id)
+        ? selectedIds
+        : []
+      : alreadySelected && selectedIds.length > 1
+        ? selectedIds
+        : [node.id];
+
+    if (dragIds.length === 0) return;
     dragRef.current = {
-      id: node.id,
-      offsetX: world.x - node.x,
-      offsetY: world.y - node.y,
+      ids: dragIds,
+      startWorld: world,
+      originById: Object.fromEntries(
+        dragIds.map((id) => {
+          const currentNode = map.nodes[id];
+          return [id, { x: currentNode.x, y: currentNode.y }];
+        })
+      ),
     };
   }
 
   function handleFreeEdgePointerDown(event, edgeId) {
     event.stopPropagation();
     setSelectedId(null);
+    setSelectedIds([]);
     setPendingConnectionFromId(null);
     setSelectedFreeEdgeId(edgeId);
     setActiveContextPanel(null);
@@ -1730,6 +2030,7 @@ function App() {
     event.preventDefault();
     event.stopPropagation();
     setSelectedId(null);
+    setSelectedIds([]);
     setPendingConnectionFromId(null);
     setSelectedFreeEdgeId(edgeId);
     freeEdgeDragRef.current = { edgeId };
@@ -1774,13 +2075,17 @@ function App() {
       () => freshMap,
       templateId === "blank" ? "Novo mapa criado" : `Template "${freshMap.title}" aplicado`
     );
-    setSelectedId(freshMap.rootId);
+    selectOnly(freshMap.rootId);
     setViewport({ x: 0, y: 0, scale: 1 });
     setIsTemplateModalOpen(false);
     requestAnimationFrame(() => centerMapFor(freshMap));
   }
 
   function stopCanvasPropagation(event) {
+    event.stopPropagation();
+  }
+
+  function stopCanvasWheel(event) {
     event.stopPropagation();
   }
 
@@ -1817,7 +2122,9 @@ function App() {
   }
 
   function handleNodeContextMenu(event, node) {
-    setSelectedId(node.id);
+    if (!selectedIdSet.has(node.id)) {
+      selectOnly(node.id);
+    }
     const worldPoint = getWorldPoint(event);
     openContextMenu(event, {
       type: "node",
@@ -2070,6 +2377,189 @@ function App() {
     return trimCanvasWhitespace(canvas, 36);
   }
 
+  async function createExportSvg() {
+    if (visibleNodes.length === 0) return null;
+
+    const padding = 48;
+    const exportBounds = getVisibleMapBounds(visibleNodes, map.rootId);
+    const width = Math.max(320, Math.ceil(exportBounds.maxX - exportBounds.minX + padding * 2));
+    const height = Math.max(240, Math.ceil(exportBounds.maxY - exportBounds.minY + padding * 2));
+    const imageCache = new Map();
+
+    await Promise.all(
+      visibleNodes
+        .filter((node) => node.imageUrl)
+        .map(async (node) => {
+          if (String(node.imageUrl).startsWith("data:")) {
+            imageCache.set(node.id, node.imageUrl);
+            return;
+          }
+          imageCache.set(node.id, node.imageUrl);
+        })
+    );
+
+    const measureContext = measureContextRef.current;
+    const svgParts = [
+      `<?xml version="1.0" encoding="UTF-8"?>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+      `<rect width="${width}" height="${height}" fill="#ffffff" />`,
+    ];
+
+    visibleNodes.forEach((node) => {
+      if (!node.parentId) return;
+      const parent = map.nodes[node.parentId];
+      if (!parent) return;
+
+      const { startX, startY, endX, endY } = getEdgeAnchors(parent, node, map.rootId);
+      const curve = Math.max(Math.abs(endX - startX) * 0.36, 52);
+      svgParts.push(
+        `<path d="M ${startX - exportBounds.minX + padding} ${startY - exportBounds.minY + padding} C ${
+          startX + curve - exportBounds.minX + padding
+        } ${startY - exportBounds.minY + padding}, ${
+          endX - curve - exportBounds.minX + padding
+        } ${endY - exportBounds.minY + padding}, ${
+          endX - exportBounds.minX + padding
+        } ${endY - exportBounds.minY + padding}" fill="none" stroke="${escapeXml(
+          node.color || "#4d7cff"
+        )}" stroke-opacity="0.82" stroke-width="3" stroke-linecap="round" />`
+      );
+    });
+
+    visibleFreeEdges.forEach((edge) => {
+      const fromNode = map.nodes[edge.fromId];
+      const toNode = map.nodes[edge.toId];
+      if (!fromNode || !toNode) return;
+
+      const geometry = getFreeEdgeGeometry(edge, fromNode, toNode, map.rootId);
+      const edgeColor = edge.color || DEFAULT_FREE_EDGE_COLOR;
+      const edgeThickness = edge.thickness || DEFAULT_FREE_EDGE_THICKNESS;
+      const dashArray = getFreeEdgeDasharray(edge.style);
+      const shiftedPath = geometry.points
+        .map((point, index) => {
+          const x = point.x - exportBounds.minX + padding;
+          const y = point.y - exportBounds.minY + padding;
+          return `${index === 0 ? "M" : "L"} ${x} ${y}`;
+        })
+        .join(" ");
+
+      svgParts.push(
+        `<path d="${shiftedPath}" fill="none" stroke="${escapeXml(edgeColor)}" stroke-width="${edgeThickness}" stroke-linecap="round" stroke-linejoin="round"${
+          dashArray ? ` stroke-dasharray="${dashArray}"` : ""
+        } />`
+      );
+
+      if (edge.arrow) {
+        const arrowPoints = getArrowHeadPoints(
+          geometry.endX - exportBounds.minX + padding,
+          geometry.endY - exportBounds.minY + padding,
+          geometry.arrowAngle,
+          8 + edgeThickness * 1.6
+        );
+        svgParts.push(`<polygon points="${arrowPoints}" fill="${escapeXml(edgeColor)}" />`);
+      }
+
+      if (edge.label) {
+        const labelX = geometry.labelX - exportBounds.minX + padding;
+        const labelY = geometry.labelY - exportBounds.minY + padding;
+        const labelWidth = Math.max(56, edge.label.length * 7 + 18);
+        svgParts.push(
+          `<rect x="${labelX - labelWidth / 2}" y="${labelY - 14}" width="${labelWidth}" height="24" rx="12" fill="rgba(255,255,255,0.96)" stroke="rgba(148,163,184,0.24)" />`
+        );
+        svgParts.push(
+          `<text x="${labelX}" y="${labelY + 4}" text-anchor="middle" font-family="Manrope, sans-serif" font-size="12" font-weight="600" fill="#334155">${escapeXml(
+            edge.label
+          )}</text>`
+        );
+      }
+    });
+
+    visibleNodes.forEach((node) => {
+      const isRoot = node.id === map.rootId;
+      const nodeWidth = getNodeWidth(node, map.rootId);
+      const nodeHeight = getNodeHeight(node, map.rootId);
+      const x = node.x - exportBounds.minX + padding;
+      const y = node.y - exportBounds.minY + padding;
+      const bg = isRoot ? node.color || "#111827" : "#ffffff";
+      const textColor = isRoot ? "#ffffff" : "#0f172a";
+      const noteColor = isRoot ? "rgba(255,255,255,0.78)" : "#64748b";
+      const radius = isRoot ? 20 : 18;
+      const contentX = x + (isRoot ? 16 : 14);
+      const contentWidth = nodeWidth - (isRoot ? 32 : 28);
+      let cursorY = y + (isRoot ? 26 : 24);
+
+      svgParts.push(
+        `<rect x="${x}" y="${y}" width="${nodeWidth}" height="${nodeHeight}" rx="${radius}" fill="${escapeXml(bg)}" stroke="${
+          isRoot ? "rgba(17,24,39,0.24)" : "rgba(15,23,42,0.08)"
+        }" />`
+      );
+
+      if (measureContext) {
+        measureContext.font = "700 16px Manrope";
+      }
+      const titleLines = measureContext
+        ? wrapCanvasText(measureContext, node.title || "Novo tópico", contentWidth)
+        : [node.title || "Novo tópico"];
+      titleLines.forEach((line, index) => {
+        svgParts.push(
+          `<text x="${contentX}" y="${cursorY + index * 18}" font-family="Manrope, sans-serif" font-size="16" font-weight="700" fill="${escapeXml(
+            textColor
+          )}">${escapeXml(line)}</text>`
+        );
+      });
+      cursorY += titleLines.length * 18;
+
+      if (node.note) {
+        cursorY += 8;
+        if (measureContext) {
+          measureContext.font = "13px Manrope";
+        }
+        const noteLines = measureContext ? wrapCanvasText(measureContext, node.note, contentWidth) : [node.note];
+        noteLines.forEach((line, index) => {
+          svgParts.push(
+            `<text x="${contentX}" y="${cursorY + index * 16}" font-family="Manrope, sans-serif" font-size="13" fill="${escapeXml(
+              noteColor
+            )}">${escapeXml(line)}</text>`
+          );
+        });
+        cursorY += noteLines.length * 16;
+      }
+
+      const imageUrl = imageCache.get(node.id);
+      if (imageUrl) {
+        cursorY += 10;
+        const imageHeight = 140;
+        svgParts.push(
+          `<clipPath id="clip-${node.id}"><rect x="${contentX}" y="${cursorY}" width="${contentWidth}" height="${imageHeight}" rx="12" /></clipPath>`
+        );
+        svgParts.push(
+          `<image href="${escapeXml(imageUrl)}" x="${contentX}" y="${cursorY}" width="${contentWidth}" height="${imageHeight}" preserveAspectRatio="xMidYMid slice" clip-path="url(#clip-${node.id})" />`
+        );
+        svgParts.push(
+          `<rect x="${contentX}" y="${cursorY}" width="${contentWidth}" height="${imageHeight}" rx="12" fill="none" stroke="rgba(15,23,42,0.08)" />`
+        );
+        cursorY += imageHeight;
+      }
+
+      if (node.linkUrl) {
+        cursorY += 10;
+        if (measureContext) {
+          measureContext.font = "12px Manrope";
+        }
+        const linkLines = measureContext ? wrapCanvasText(measureContext, node.linkUrl, contentWidth) : [node.linkUrl];
+        linkLines.forEach((line, index) => {
+          svgParts.push(
+            `<text x="${contentX}" y="${cursorY + index * 14}" font-family="Manrope, sans-serif" font-size="12" fill="${
+              isRoot ? "#dbeafe" : "#4d7cff"
+            }">${escapeXml(line)}</text>`
+          );
+        });
+      }
+    });
+
+    svgParts.push(`</svg>`);
+    return svgParts.join("");
+  }
+
   return (
     <main className="app app-canvas-only">
       <section
@@ -2190,9 +2680,9 @@ function App() {
                 className="tree-edge"
                 d={`M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`}
                 fill="none"
-                stroke={selectedId === node.id || selectedId === parent.id ? "#4d7cff" : node.color}
-                strokeOpacity={selectedId === node.id || selectedId === parent.id ? "0.95" : "0.68"}
-                strokeWidth={selectedId === node.id ? 4 : 3}
+                stroke={selectedIdSet.has(node.id) || selectedIdSet.has(parent.id) ? "#4d7cff" : node.color}
+                strokeOpacity={selectedIdSet.has(node.id) || selectedIdSet.has(parent.id) ? "0.95" : "0.68"}
+                strokeWidth={selectedIdSet.has(node.id) ? 4 : 3}
                 strokeLinecap="round"
               />
             );
@@ -2203,7 +2693,7 @@ function App() {
           {visibleNodes.map((node) => (
             <article
               key={node.id}
-              className={`node-card ${selectedId === node.id ? "selected" : ""} ${node.id === map.rootId ? "root" : ""}`}
+              className={`node-card ${selectedIdSet.has(node.id) ? "selected" : ""} ${node.id === map.rootId ? "root" : ""}`}
               data-pending-connection={pendingConnectionFromId === node.id ? "true" : undefined}
               style={{
                 left: node.x,
@@ -2219,12 +2709,14 @@ function App() {
               onContextMenu={(event) => handleNodeContextMenu(event, node)}
               onClick={(event) => {
                 event.stopPropagation();
-                setSelectedId(node.id);
+                if (!isModifierSelection(event)) {
+                  selectOnly(node.id);
+                }
               }}
             >
               <div className="node-head">
                 <div className="node-title-row">
-                  {selectedId === node.id ? (
+                  {selectedId === node.id && selectedIds.length === 1 ? (
                     <input
                       className="node-title-input"
                       value={node.title}
@@ -2252,7 +2744,7 @@ function App() {
                   ) : null}
                 </div>
               </div>
-              {selectedId === node.id ? (
+              {selectedId === node.id && selectedIds.length === 1 ? (
                 <div className="node-editor" onPointerDown={stopCanvasPropagation} onClick={stopCanvasPropagation}>
                   <textarea
                     className="node-note-input"
@@ -2314,11 +2806,12 @@ function App() {
             <div
               className="selection-toolbar free-edge-toolbar"
               style={{
-                left: selectedFreeEdgeOverlay.left,
-                top: selectedFreeEdgeOverlay.top - 48,
+                left: freeEdgeToolbarPosition?.left ?? selectedFreeEdgeOverlay.left,
+                top: freeEdgeToolbarPosition?.top ?? selectedFreeEdgeOverlay.top - 48,
               }}
               onPointerDown={stopCanvasPointerFlow}
               onClick={stopCanvasPropagation}
+              onWheel={stopCanvasWheel}
             >
               <button
                 className={`toolbar-color-button ${activeContextPanel === "free-edge-color" ? "active" : ""}`}
@@ -2360,11 +2853,12 @@ function App() {
               <div
                 className="context-popover color-popover"
                 style={{
-                  left: selectedFreeEdgeOverlay.left,
-                  top: selectedFreeEdgeOverlay.top + 2,
+                  left: freeEdgeColorPopoverPosition?.left ?? selectedFreeEdgeOverlay.left,
+                  top: freeEdgeColorPopoverPosition?.top ?? selectedFreeEdgeOverlay.top + 2,
                 }}
                 onPointerDown={stopCanvasPointerFlow}
                 onClick={stopCanvasPropagation}
+                onWheel={stopCanvasWheel}
               >
                 <div className="color-swatch-grid">
                   {[DEFAULT_FREE_EDGE_COLOR, ...NODE_COLORS].map((color) => (
@@ -2386,11 +2880,12 @@ function App() {
               <div
                 className="context-popover free-edge-style-popover"
                 style={{
-                  left: selectedFreeEdgeOverlay.left,
-                  top: selectedFreeEdgeOverlay.top + 2,
+                  left: freeEdgeStylePopoverPosition?.left ?? selectedFreeEdgeOverlay.left,
+                  top: freeEdgeStylePopoverPosition?.top ?? selectedFreeEdgeOverlay.top + 2,
                 }}
                 onPointerDown={stopCanvasPointerFlow}
                 onClick={stopCanvasPropagation}
+                onWheel={stopCanvasWheel}
               >
                 <div className="popover-group">
                   <p className="popover-label">Estilo</p>
@@ -2484,6 +2979,7 @@ function App() {
               }}
               onPointerDown={stopCanvasPointerFlow}
               onClick={stopCanvasPropagation}
+              onWheel={stopCanvasWheel}
             >
               <button title="Focar" onClick={() => centerOnNode(selectedNode.id)}>
                 <Focus size={16} strokeWidth={2.2} />
@@ -2560,11 +3056,12 @@ function App() {
               <div
                 className="context-popover color-popover"
                 style={{
-                  left: selectedNodeOverlay.left + selectedNodeOverlay.width / 2,
-                  top: selectedNodeOverlay.top - 6,
+                  left: nodeColorPopoverPosition?.left ?? selectedNodeOverlay.left + selectedNodeOverlay.width / 2,
+                  top: nodeColorPopoverPosition?.top ?? selectedNodeOverlay.top - 6,
                 }}
                 onPointerDown={stopCanvasPointerFlow}
                 onClick={stopCanvasPropagation}
+                onWheel={stopCanvasWheel}
               >
                 <div className="color-swatch-grid">
                   {NODE_COLORS.map((color) => (
@@ -2628,12 +3125,85 @@ function App() {
           </>
         ) : null}
 
+        {multiSelectionOverlay ? (
+          <>
+            <div
+              className="multi-selection-outline"
+              style={{
+                left: multiSelectionOverlay.left - 10,
+                top: multiSelectionOverlay.top - 10,
+                width: multiSelectionOverlay.width + 20,
+                height: multiSelectionOverlay.height + 20,
+              }}
+            />
+            <div
+              className="selection-toolbar multi-selection-toolbar"
+              style={{
+                left: multiSelectionToolbarPosition?.left ?? multiSelectionOverlay.left + multiSelectionOverlay.width / 2,
+                top: multiSelectionToolbarPosition?.top ?? multiSelectionOverlay.top - 56,
+              }}
+              onPointerDown={stopCanvasPointerFlow}
+              onClick={stopCanvasPropagation}
+              onWheel={stopCanvasWheel}
+            >
+              <button title="Focar seleção" onClick={() => centerSelection(selectedIds)}>
+                <Focus size={16} strokeWidth={2.2} />
+              </button>
+              <button
+                className={`toolbar-color-button ${activeContextPanel === "multi-color" ? "active" : ""}`}
+                title="Cor em lote"
+                onClick={() =>
+                  setActiveContextPanel((current) => (current === "multi-color" ? null : "multi-color"))
+                }
+              >
+                <Palette size={14} strokeWidth={2.2} />
+              </button>
+              <button title="Duplicar seleção" onClick={() => duplicateNodes(selectedIds)}>
+                <Copy size={16} strokeWidth={2.2} />
+              </button>
+              <button title="Excluir seleção" className="danger" onClick={() => removeNodes(selectedIds)}>
+                <Trash2 size={16} strokeWidth={2.2} />
+              </button>
+            </div>
+
+            {activeContextPanel === "multi-color" ? (
+              <div
+                className="context-popover color-popover"
+                style={{
+                  left:
+                    multiSelectionColorPopoverPosition?.left ??
+                    multiSelectionOverlay.left + multiSelectionOverlay.width / 2,
+                  top: multiSelectionColorPopoverPosition?.top ?? multiSelectionOverlay.top - 6,
+                }}
+                onPointerDown={stopCanvasPointerFlow}
+                onClick={stopCanvasPropagation}
+                onWheel={stopCanvasWheel}
+              >
+                <div className="color-swatch-grid">
+                  {NODE_COLORS.map((color) => (
+                    <button
+                      key={`multi-${color}`}
+                      className="color-swatch"
+                      style={{ "--swatch-color": color }}
+                      onClick={() => {
+                        setNodesColor(selectedIds, color);
+                        setActiveContextPanel(null);
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+
         {contextMenu ? (
           <div
             className="context-menu"
             style={{ left: contextMenu.left, top: contextMenu.top }}
             onPointerDown={stopCanvasPropagation}
             onClick={stopCanvasPropagation}
+            onWheel={stopCanvasWheel}
           >
             <button onClick={() => runContextAction("create")}>Criar</button>
             <button onClick={() => runContextAction("duplicate")} disabled={contextMenu.type !== "node"}>
@@ -2915,6 +3485,14 @@ function App() {
                 <button
                   onClick={async () => {
                     setIsExportModalOpen(false);
+                    await exportAsSvg();
+                  }}
+                >
+                  SVG
+                </button>
+                <button
+                  onClick={async () => {
+                    setIsExportModalOpen(false);
                     await exportAsPdf();
                   }}
                 >
@@ -2996,7 +3574,7 @@ function App() {
           {visibleNodes.map((node) => (
             <div
               key={`dot-${node.id}`}
-              className={`mini-node ${selectedId === node.id ? "active" : ""}`}
+              className={`mini-node ${selectedIdSet.has(node.id) ? "active" : ""}`}
               style={{
                 left: (node.x - bounds.minX) * miniScale + 6,
                 top: (node.y - bounds.minY) * miniScale + 6,
