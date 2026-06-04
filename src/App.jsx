@@ -33,6 +33,175 @@ const EMPTY_ASSET_MODAL = {
   nodeId: null,
   url: "",
 };
+const TEMPLATE_OPTIONS = [
+  {
+    id: "blank",
+    name: "Em branco",
+    eyebrow: "Começo livre",
+    description: "Abre um canvas limpo com apenas o card principal.",
+    accent: "#111827",
+  },
+  {
+    id: "study",
+    name: "Plano de estudos",
+    eyebrow: "Aprendizado",
+    description: "Organiza tema, metas, cronograma, materiais e revisão.",
+    accent: "#2563eb",
+    mapTitle: "Plano de estudos",
+    markdown: `# Plano de estudos
+## Tema principal
+- O que preciso aprender
+- Objetivo final
+
+## Metas
+- Curto prazo
+- Médio prazo
+- Longo prazo
+
+## Materiais
+- Livros
+- Cursos
+- Links úteis
+
+## Cronograma
+- Rotina semanal
+- Datas importantes
+
+## Revisão
+- Dúvidas
+- Resumos
+- Próximos passos`,
+  },
+  {
+    id: "project",
+    name: "Planejamento de projeto",
+    eyebrow: "Execução",
+    description: "Estrutura escopo, entregas, responsáveis, riscos e próximos passos.",
+    accent: "#16a34a",
+    mapTitle: "Planejamento de projeto",
+    markdown: `# Planejamento de projeto
+## Visão geral
+- Objetivo
+- Resultado esperado
+
+## Escopo
+- O que entra
+- O que fica de fora
+
+## Entregas
+- Marco 1
+- Marco 2
+- Marco 3
+
+## Equipe
+- Responsáveis
+- Dependências
+
+## Riscos
+- Bloqueios
+- Mitigações
+
+## Próximos passos
+- Ações imediatas
+- Decisões pendentes`,
+  },
+  {
+    id: "brainstorm",
+    name: "Brainstorm",
+    eyebrow: "Ideação",
+    description: "Perfeito para explorar ideias, agrupamentos e oportunidades.",
+    accent: "#7c3aed",
+    mapTitle: "Brainstorm",
+    markdown: `# Brainstorm
+## Ideias centrais
+- Possibilidade 1
+- Possibilidade 2
+
+## Oportunidades
+- O que pode crescer
+- O que pode melhorar
+
+## Perguntas
+- O que ainda não sabemos
+- O que precisamos validar
+
+## Experimentos
+- Teste rápido
+- Protótipo
+
+## Decisões
+- O que priorizar
+- O que descartar`,
+  },
+  {
+    id: "book",
+    name: "Resumo de livro",
+    eyebrow: "Leitura",
+    description: "Cria uma espinha pronta para registrar ideias e aplicações.",
+    accent: "#ea580c",
+    mapTitle: "Resumo de livro",
+    markdown: `# Resumo de livro
+## Livro
+- Título
+- Autor
+
+## Ideia central
+- Tese principal
+- Mensagem mais forte
+
+## Capítulos
+- Ponto 1
+- Ponto 2
+- Ponto 3
+
+## Citações
+- Trecho marcante
+- Referência
+
+## Insights
+- O que aprendi
+- O que mudou
+
+## Aplicações
+- Como usar na prática
+- Próximos testes`,
+  },
+  {
+    id: "content",
+    name: "Plano de conteúdo",
+    eyebrow: "Criação",
+    description: "Ajuda a organizar pauta, formatos, distribuição e CTA.",
+    accent: "#db2777",
+    mapTitle: "Plano de conteúdo",
+    markdown: `# Plano de conteúdo
+## Tema central
+- Mensagem principal
+- Público
+
+## Pautas
+- Conteúdo 1
+- Conteúdo 2
+- Conteúdo 3
+
+## Formatos
+- Vídeo
+- Carrossel
+- Texto
+
+## Distribuição
+- Canal principal
+- Canal secundário
+
+## CTA
+- Ação desejada
+- Conversão esperada
+
+## Métricas
+- Alcance
+- Engajamento
+- Conversão`,
+  },
+];
 const DEFAULT_FREE_EDGE_COLOR = "#475569";
 const DEFAULT_FREE_EDGE_STYLE = "dashed";
 const DEFAULT_FREE_EDGE_THICKNESS = 2.5;
@@ -95,6 +264,152 @@ function createInitialMap() {
         collapsed: false,
       },
     },
+  };
+}
+
+function applyTemplateColors(map, accent) {
+  const root = map.nodes[map.rootId];
+  if (!root) return map;
+
+  root.color = accent || "#111827";
+  root.note = "";
+
+  root.children.forEach((childId, index) => {
+    const branchColor = NODE_COLORS[index % NODE_COLORS.length];
+
+    const paintBranch = (nodeId) => {
+      const node = map.nodes[nodeId];
+      if (!node) return;
+      node.color = branchColor;
+      node.children.forEach(paintBranch);
+    };
+
+    paintBranch(childId);
+  });
+
+  return map;
+}
+
+function createTemplateMap(templateId) {
+  const template = TEMPLATE_OPTIONS.find((item) => item.id === templateId);
+  if (!template || template.id === "blank") return createInitialMap();
+
+  const nextMap = parseMarkdownToMap(template.markdown);
+  nextMap.title = template.mapTitle || template.name;
+  nextMap.nodes[nextMap.rootId].title = template.mapTitle || template.name;
+  return applyTemplateColors(nextMap, template.accent);
+}
+
+function layoutMap(current) {
+  const nodes = structuredClone(current.nodes);
+  const spanCache = new Map();
+  const leafSpan = 96;
+
+  const getSubtreeSpan = (nodeId, depth = 0) => {
+    const cacheKey = `${nodeId}:${depth}`;
+    if (spanCache.has(cacheKey)) return spanCache.get(cacheKey);
+
+    const node = nodes[nodeId];
+    if (!node) return leafSpan;
+
+    const nodeHeight = getNodeHeight(node, current.rootId) + 18;
+    if (node.children.length === 0) {
+      const span = Math.max(nodeHeight, leafSpan - Math.min(depth * 4, 18));
+      spanCache.set(cacheKey, span);
+      return span;
+    }
+
+    const verticalGap = Math.max(40 - depth * 2, 26);
+    const childrenSpan =
+      node.children.reduce((total, childId) => total + getSubtreeSpan(childId, depth + 1), 0) +
+      verticalGap * Math.max(node.children.length - 1, 0);
+    const span = Math.max(nodeHeight, childrenSpan);
+    spanCache.set(cacheKey, span);
+    return span;
+  };
+
+  const layoutBranch = (parentId, direction, depth = 0) => {
+    const parent = nodes[parentId];
+    if (!parent || parent.children.length === 0) return;
+
+    const horizontalGap = depth === 0 ? 320 : Math.max(250 - depth * 14, 180);
+    const verticalGap = Math.max(40 - depth * 2, 26);
+    const spans = parent.children.map((childId) => getSubtreeSpan(childId, depth + 1));
+    const totalSpan = spans.reduce((sum, span) => sum + span, 0) + verticalGap * Math.max(spans.length - 1, 0);
+    let cursorY = parent.y + getNodeHeight(parent, current.rootId) / 2 - totalSpan / 2;
+
+    parent.children.forEach((childId, index) => {
+      const child = nodes[childId];
+      if (!child) return;
+
+      const childSpan = spans[index];
+      const childHeight = getNodeHeight(child, current.rootId);
+      const childCenterY = cursorY + childSpan / 2;
+
+      child.x = parent.x + direction * horizontalGap;
+      child.y = childCenterY - childHeight / 2;
+
+      layoutBranch(childId, direction, depth + 1);
+      cursorY += childSpan + verticalGap;
+    });
+  };
+
+  const root = nodes[current.rootId];
+  root.x = 0;
+  root.y = 0;
+  const sortedChildren = [...root.children].sort((a, b) => {
+    const spanDiff = getSubtreeSpan(b, 1) - getSubtreeSpan(a, 1);
+    if (spanDiff !== 0) return spanDiff;
+    return (nodes[a]?.y || 0) - (nodes[b]?.y || 0);
+  });
+
+  const leftIds = [];
+  const rightIds = [];
+  let leftSpan = 0;
+  let rightSpan = 0;
+
+  sortedChildren.forEach((childId) => {
+    const span = getSubtreeSpan(childId, 1);
+    if (leftSpan <= rightSpan) {
+      leftIds.push(childId);
+      leftSpan += span;
+    } else {
+      rightIds.push(childId);
+      rightSpan += span;
+    }
+  });
+
+  root.children = [...leftIds, ...rightIds];
+
+  const placeRootSide = (childIds, direction) => {
+    if (childIds.length === 0) return;
+    const verticalGap = 48;
+    const totalSpan =
+      childIds.reduce((sum, childId) => sum + getSubtreeSpan(childId, 1), 0) +
+      verticalGap * Math.max(childIds.length - 1, 0);
+    let cursorY = root.y + getNodeHeight(root, current.rootId) / 2 - totalSpan / 2;
+
+    childIds.forEach((childId) => {
+      const child = nodes[childId];
+      if (!child) return;
+
+      const childSpan = getSubtreeSpan(childId, 1);
+      const childHeight = getNodeHeight(child, current.rootId);
+      const childCenterY = cursorY + childSpan / 2;
+
+      child.x = root.x + direction * 320;
+      child.y = childCenterY - childHeight / 2;
+      layoutBranch(childId, direction, 1);
+      cursorY += childSpan + verticalGap;
+    });
+  };
+
+  placeRootSide(leftIds, -1);
+  placeRootSide(rightIds, 1);
+
+  return {
+    ...current,
+    nodes,
   };
 }
 
@@ -615,6 +930,7 @@ function App() {
   const [markdownDraft, setMarkdownDraft] = useState("");
   const [isMarkdownModalOpen, setIsMarkdownModalOpen] = useState(false);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
   const [activeContextPanel, setActiveContextPanel] = useState(null);
   const [assetModal, setAssetModal] = useState(EMPTY_ASSET_MODAL);
   const [pendingConnectionFromId, setPendingConnectionFromId] = useState(null);
@@ -698,6 +1014,7 @@ function App() {
         setContextMenu(null);
         setActiveContextPanel(null);
         setAssetModal(EMPTY_ASSET_MODAL);
+        setIsTemplateModalOpen(false);
         setPendingConnectionFromId(null);
         setSelectedFreeEdgeId(null);
         setIsFreeEdgeLabelModalOpen(false);
@@ -1116,118 +1433,7 @@ function App() {
   }
 
   function autoLayout() {
-    updateMap((current) => {
-      const nodes = structuredClone(current.nodes);
-      const spanCache = new Map();
-      const leafSpan = 96;
-
-      const getSubtreeSpan = (nodeId, depth = 0) => {
-        const cacheKey = `${nodeId}:${depth}`;
-        if (spanCache.has(cacheKey)) return spanCache.get(cacheKey);
-
-        const node = nodes[nodeId];
-        if (!node) return leafSpan;
-
-        const nodeHeight = getNodeHeight(node, current.rootId) + 18;
-        if (node.children.length === 0) {
-          const span = Math.max(nodeHeight, leafSpan - Math.min(depth * 4, 18));
-          spanCache.set(cacheKey, span);
-          return span;
-        }
-
-        const verticalGap = Math.max(40 - depth * 2, 26);
-        const childrenSpan =
-          node.children.reduce((total, childId) => total + getSubtreeSpan(childId, depth + 1), 0) +
-          verticalGap * Math.max(node.children.length - 1, 0);
-        const span = Math.max(nodeHeight, childrenSpan);
-        spanCache.set(cacheKey, span);
-        return span;
-      };
-
-      const layoutBranch = (parentId, direction, depth = 0) => {
-        const parent = nodes[parentId];
-        if (!parent || parent.children.length === 0) return;
-
-        const horizontalGap = depth === 0 ? 320 : Math.max(250 - depth * 14, 180);
-        const verticalGap = Math.max(40 - depth * 2, 26);
-        const spans = parent.children.map((childId) => getSubtreeSpan(childId, depth + 1));
-        const totalSpan = spans.reduce((sum, span) => sum + span, 0) + verticalGap * Math.max(spans.length - 1, 0);
-        let cursorY = parent.y + getNodeHeight(parent, current.rootId) / 2 - totalSpan / 2;
-
-        parent.children.forEach((childId, index) => {
-          const child = nodes[childId];
-          if (!child) return;
-
-          const childSpan = spans[index];
-          const childHeight = getNodeHeight(child, current.rootId);
-          const childCenterY = cursorY + childSpan / 2;
-
-          child.x = parent.x + direction * horizontalGap;
-          child.y = childCenterY - childHeight / 2;
-
-          layoutBranch(childId, direction, depth + 1);
-          cursorY += childSpan + verticalGap;
-        });
-      };
-
-      const root = nodes[current.rootId];
-      root.x = 0;
-      root.y = 0;
-      const sortedChildren = [...root.children].sort((a, b) => {
-        const spanDiff = getSubtreeSpan(b, 1) - getSubtreeSpan(a, 1);
-        if (spanDiff !== 0) return spanDiff;
-        return (nodes[a]?.y || 0) - (nodes[b]?.y || 0);
-      });
-
-      const leftIds = [];
-      const rightIds = [];
-      let leftSpan = 0;
-      let rightSpan = 0;
-
-      sortedChildren.forEach((childId) => {
-        const span = getSubtreeSpan(childId, 1);
-        if (leftSpan <= rightSpan) {
-          leftIds.push(childId);
-          leftSpan += span;
-        } else {
-          rightIds.push(childId);
-          rightSpan += span;
-        }
-      });
-
-      root.children = [...leftIds, ...rightIds];
-
-      const placeRootSide = (childIds, direction) => {
-        if (childIds.length === 0) return;
-        const verticalGap = 48;
-        const totalSpan =
-          childIds.reduce((sum, childId) => sum + getSubtreeSpan(childId, 1), 0) +
-          verticalGap * Math.max(childIds.length - 1, 0);
-        let cursorY = root.y + getNodeHeight(root, current.rootId) / 2 - totalSpan / 2;
-
-        childIds.forEach((childId) => {
-          const child = nodes[childId];
-          if (!child) return;
-
-          const childSpan = getSubtreeSpan(childId, 1);
-          const childHeight = getNodeHeight(child, current.rootId);
-          const childCenterY = cursorY + childSpan / 2;
-
-          child.x = root.x + direction * 320;
-          child.y = childCenterY - childHeight / 2;
-          layoutBranch(childId, direction, 1);
-          cursorY += childSpan + verticalGap;
-        });
-      };
-
-      placeRootSide(leftIds, -1);
-      placeRootSide(rightIds, 1);
-
-      return {
-        ...current,
-        nodes,
-      };
-    }, "Layout reorganizado");
+    updateMap((current) => layoutMap(current), "Layout reorganizado");
   }
 
   function centerOnNode(nodeId = map.rootId) {
@@ -1247,13 +1453,29 @@ function App() {
   }
 
   function centerVisibleMap() {
+    centerMapFor(map);
+  }
+
+  function centerMapFor(targetMap) {
     const frame = frameRef.current;
-    if (!frame || visibleNodes.length === 0) return;
+    if (!frame) return;
+
+    const nodes = [];
+    const visit = (id) => {
+      const node = targetMap.nodes[id];
+      if (!node) return;
+      nodes.push(node);
+      if (node.collapsed) return;
+      node.children.forEach(visit);
+    };
+    visit(targetMap.rootId);
+
+    if (nodes.length === 0) return;
 
     const rect = frame.getBoundingClientRect();
-    const bounds = visibleNodes.reduce(
+    const bounds = nodes.reduce(
       (acc, node) => {
-        const nodeBounds = getNodeBounds(node, map.rootId);
+        const nodeBounds = getNodeBounds(node, targetMap.rootId);
         return {
           minX: Math.min(acc.minX, nodeBounds.minX),
           minY: Math.min(acc.minY, nodeBounds.minY),
@@ -1273,11 +1495,11 @@ function App() {
     const mapCenterY = (bounds.minY + bounds.maxY) / 2;
     const topOffset = 44;
 
-    setViewport((current) => ({
-      ...current,
-      x: rect.width / 2 - mapCenterX * current.scale,
-      y: (rect.height + topOffset) / 2 - mapCenterY * current.scale,
-    }));
+    setViewport({
+      scale: 1,
+      x: rect.width / 2 - mapCenterX,
+      y: (rect.height + topOffset) / 2 - mapCenterY,
+    });
   }
 
   function toggleCollapse(nodeId) {
@@ -1377,10 +1599,10 @@ function App() {
   }
 
   function importMarkdownText(markdownText) {
-    const parsedMap = parseMarkdownToMap(markdownText);
+    const parsedMap = layoutMap(parseMarkdownToMap(markdownText));
     updateMap(() => parsedMap, "Markdown convertido em mapa");
     setSelectedId(parsedMap.rootId);
-    requestAnimationFrame(() => centerOnNode(parsedMap.rootId));
+    requestAnimationFrame(() => centerMapFor(parsedMap));
   }
 
   function importMarkdownFile(event) {
@@ -1545,12 +1767,17 @@ function App() {
     });
   }
 
-  function resetMap() {
-    const freshMap = createInitialMap();
-    updateMap(() => freshMap, "Novo mapa criado");
+  function resetMap(templateId = "blank") {
+    const baseMap = createTemplateMap(templateId);
+    const freshMap = templateId === "blank" ? baseMap : layoutMap(baseMap);
+    updateMap(
+      () => freshMap,
+      templateId === "blank" ? "Novo mapa criado" : `Template "${freshMap.title}" aplicado`
+    );
     setSelectedId(freshMap.rootId);
     setViewport({ x: 0, y: 0, scale: 1 });
-    requestAnimationFrame(() => centerOnNode(freshMap.rootId));
+    setIsTemplateModalOpen(false);
+    requestAnimationFrame(() => centerMapFor(freshMap));
   }
 
   function stopCanvasPropagation(event) {
@@ -1891,7 +2118,7 @@ function App() {
             <button onClick={redoMap} disabled={!canRedo} title="Refazer (Shift+Cmd/Ctrl+Z)">
               <Redo2 size={16} strokeWidth={2.2} />
             </button>
-            <button onClick={resetMap}>Novo</button>
+            <button onClick={() => setIsTemplateModalOpen(true)}>Novo</button>
             <button onClick={centerVisibleMap}>Centralizar</button>
             <button onClick={autoLayout}>Auto layout</button>
             <button onClick={() => setIsExportModalOpen(true)}>Exportar</button>
@@ -2465,6 +2692,48 @@ function App() {
                 >
                   Gerar mapa
                 </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isTemplateModalOpen ? (
+          <div className="modal-backdrop" onPointerDown={() => setIsTemplateModalOpen(false)}>
+            <div
+              className="markdown-modal template-modal"
+              onPointerDown={stopCanvasPropagation}
+              onClick={stopCanvasPropagation}
+            >
+              <div className="markdown-modal-head">
+                <div>
+                  <p className="label">Templates</p>
+                  <h3>Como você quer começar este mapa?</h3>
+                </div>
+                <button onClick={() => setIsTemplateModalOpen(false)}>×</button>
+              </div>
+
+              <div className="template-grid">
+                {TEMPLATE_OPTIONS.map((template) => (
+                  <button
+                    key={template.id}
+                    className={`template-card ${template.id === "blank" ? "template-card-blank" : ""}`}
+                    style={{ "--template-accent": template.accent }}
+                    onClick={() => resetMap(template.id)}
+                  >
+                    <div className="template-card-top">
+                      <span className="template-chip">{template.eyebrow}</span>
+                      <span className="template-dot" />
+                    </div>
+                    <div className="template-card-body">
+                      <h4>{template.name}</h4>
+                      <p>{template.description}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              <div className="markdown-modal-actions">
+                <button onClick={() => setIsTemplateModalOpen(false)}>Cancelar</button>
               </div>
             </div>
           </div>

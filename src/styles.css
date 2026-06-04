@@ -431,6 +431,93 @@ button {
   width: min(420px, calc(100vw - 48px));
 }
 
+.template-modal {
+  width: min(920px, calc(100vw - 48px));
+}
+
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.template-card {
+  min-height: 168px;
+  padding: 16px;
+  border-radius: 22px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--template-accent, #111827) 14%, white), transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+  color: var(--text);
+  display: grid;
+  align-content: space-between;
+  gap: 22px;
+  text-align: left;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.template-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 34px rgba(15, 23, 42, 0.1);
+  border-color: color-mix(in srgb, var(--template-accent, #111827) 30%, white);
+}
+
+.template-card-blank {
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.02), rgba(255, 255, 255, 0.98)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
+}
+
+.template-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.template-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.84);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.template-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--template-accent, #111827);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--template-accent, #111827) 14%, white);
+}
+
+.template-card-body {
+  display: grid;
+  gap: 8px;
+}
+
+.template-card-body h4 {
+  margin: 0;
+  font-size: 1rem;
+  font-family: "Plus Jakarta Sans", sans-serif;
+  letter-spacing: -0.03em;
+}
+
+.template-card-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
 .export-options {
   display: grid;
   gap: 10px;
@@ -894,5 +981,9 @@ button {
   .shortcut-hint,
   .selection-toolbar {
     display: none;
+  }
+
+  .template-grid {
+    grid-template-columns: 1fr;
   }
 }

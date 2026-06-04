@@ -9,6 +9,7 @@ Editor de mapa mental visual feito em `React + Vite`, com foco em um fluxo limpo
 - Conexões livres entre nós com estilos, seta e dobra arrastável
 - Imagens por upload local ou URL
 - Links por nó
+- Templates prontos para começar mais rápido
 - Importação de `Markdown` e `JSON`
 - Exportação em `JSON`, `PDF` e `PNG`
 - Recorte automático da área útil na exportação
@@ -75,6 +76,7 @@ npm run preview
 ### Edição do mapa
 
 - criar novo mapa
+- escolher entre mapa em branco ou template pronto
 - renomear o mapa pela barra superior
 - criar tópico filho
 - criar tópico irmão
@@ -123,6 +125,7 @@ npm run preview
 - importar mapa em `JSON`
 - importar arquivo `.md`
 - colar Markdown em modal
+- reorganização automática após importar Markdown
 
 ### Conversão de Markdown
 
@@ -132,6 +135,8 @@ O parser atual entende:
 - `##`, `###` e headings seguintes como tópicos
 - listas com `- item` como subtópicos
 - texto solto como nota do último tópico criado
+
+Depois da conversão, o mapa também passa por layout automático e já entra centralizado no canvas.
 
 ### Exportação
 
@@ -151,9 +156,12 @@ Na exportação visual, o sistema:
 ### Criar um mapa do zero
 
 1. Clique em `Novo`
-2. Renomeie o mapa na barra superior
-3. Selecione o card principal
-4. Use `Tab` ou os botões `+` para criar ramificações
+2. Escolha entre `Em branco` ou um template pronto
+3. Renomeie o mapa na barra superior
+4. Selecione o card principal
+5. Use `Tab` ou os botões `+` para criar ramificações
+
+Os templates já abrem com estrutura inicial, layout organizado e enquadramento automático no canvas.
 
 ### Editar um nó
 
@@ -177,6 +185,8 @@ Na exportação visual, o sistema:
 2. Ou clique em `Colar MD`
 3. Cole o conteúdo
 4. Clique em `Gerar mapa`
+
+O mapa importado já aparece reorganizado e centralizado automaticamente.
 
 ### Exportar
 
@@ -224,6 +234,7 @@ npm run preview
 - imagens e links ainda não têm edição avançada
 - o renderer manual de exportação ainda pode divergir sutilmente do canvas em casos mais ricos
 - conexões livres ainda usam uma única dobra manual por linha
+- templates ainda são uma primeira galeria curada, não uma biblioteca extensa
 
 ## Troubleshooting
 
@@ -255,7 +266,7 @@ O sistema já faz recorte automático por área útil e ainda aplica um corte fi
 
 - colaboração em tempo real
 - backend de persistência real
-- templates de mapas mentais
+- biblioteca maior de templates
 - histórico e versionamento
 
 ## To Do
